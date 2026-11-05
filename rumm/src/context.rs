@@ -12,7 +12,9 @@ use core::fmt::{Debug, Formatter};
 use metamath_rs::formula::Substitutions;
 use metamath_rs::Formula;
 use metamath_rs::Label;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 /// Where the trace of a proof search goes: called with each line, indented by depth.
 /// The batch command line prints them on stdout; a library user decides.
@@ -39,6 +41,12 @@ pub struct Context {
     depth: usize,
     max_depth: usize,
     trace: Option<TraceSink>,
+    /// Whether the tactics run for a proof state (`apply` request): `?` leaves an open goal
+    /// and applications bind work variables. See `Context::stepwise`.
+    stepwise: bool,
+    /// The highest index of each work variable letter handed out as fresh, shared by every
+    /// context of the run.
+    fresh: Rc<RefCell<BTreeMap<char, usize>>>,
 }
 
 impl Debug for Context {
@@ -73,6 +81,8 @@ impl<'a> Context {
             depth: 0,
             max_depth,
             trace,
+            stepwise: false,
+            fresh: Rc::new(RefCell::new(BTreeMap::new())),
         }
     }
 
@@ -122,6 +132,8 @@ impl<'a> Context {
             depth: self.depth + 1,
             max_depth: self.max_depth,
             trace: self.trace.clone(),
+            stepwise: self.stepwise,
+            fresh: self.fresh.clone(),
         }
     }
 
@@ -143,6 +155,8 @@ impl<'a> Context {
             depth: self.depth + 1,
             max_depth: self.max_depth,
             trace: self.trace.clone(),
+            stepwise: self.stepwise,
+            fresh: self.fresh.clone(),
         }
     }
 
@@ -162,6 +176,8 @@ impl<'a> Context {
             depth: self.depth + 1,
             max_depth: self.max_depth,
             trace: self.trace.clone(),
+            stepwise: self.stepwise,
+            fresh: self.fresh.clone(),
         }
     }
 
@@ -196,6 +212,47 @@ impl<'a> Context {
 
     pub fn get_variable_label(&self, f: Formula) -> Option<Label> {
         f.get_by_path(&[])
+    }
+
+    /// Makes this the context of a stepwise run: `?` leaves an open goal, applications bind
+    /// the work variables of the goal, and fresh work variables are numbered after `highest`
+    /// (the highest index in use, by letter).
+    pub fn set_stepwise(&mut self, highest: BTreeMap<char, usize>) {
+        self.stepwise = true;
+        self.fresh = Rc::new(RefCell::new(highest));
+    }
+
+    pub fn stepwise(&self) -> bool {
+        self.stepwise
+    }
+
+    /// A work variable no goal of the state uses: the next index of its letter, declared if
+    /// needed. `typecode` is the name of the typecode the variable has.
+    pub fn fresh_metavariable(&self, typecode: &str) -> TacticsResult<Formula> {
+        let letter = self.db.metavariable_letter(typecode).ok_or_else(|| {
+            TacticsError::MetavariableUnavailable(format!("no work variable letter for typecode {}", typecode))
+        })?;
+        let index = {
+            let mut fresh = self.fresh.borrow_mut();
+            let next = fresh.entry(letter).or_insert(0);
+            *next += 1;
+            *next
+        };
+        let mut db = self.db.clone();
+        db.ensure_metavariables(&BTreeMap::from([(letter, index)]))
+            .map_err(|e| TacticsError::MetavariableUnavailable(format!("{}", e)))?;
+        self.db.metavariable(letter, index).ok_or_else(|| {
+            TacticsError::MetavariableUnavailable(format!("&{}{} is not declared", letter, index))
+        })
+    }
+
+    /// The numbering of fresh work variables, to restore when a branch which used some fails.
+    pub fn fresh_mark(&self) -> BTreeMap<char, usize> {
+        self.fresh.borrow().clone()
+    }
+
+    pub fn fresh_reset(&self, mark: BTreeMap<char, usize>) {
+        *self.fresh.borrow_mut() = mark;
     }
 
     pub fn theorem(&self) -> Option<Label> {

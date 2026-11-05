@@ -11,6 +11,7 @@ pub mod lang;
 pub mod parser;
 pub mod script;
 pub mod serve;
+pub mod stepwise;
 pub mod tactics;
 
 pub use context::{TraceSink, DEFAULT_MAX_DEPTH};
@@ -92,7 +93,28 @@ impl Engine {
         trace: Option<TraceSink>,
         warnings: &mut Vec<String>,
     ) -> std::result::Result<Proof, Failure> {
-        let (name, text) = match &request.library {
+        let script = self.load_script(&request.library, warnings)?;
+        let theorem: Label = self
+            .db
+            .get_theorem_label(request.theorem.clone())
+            .ok_or_else(|| Failure::new("unknown-theorem", format!("Unknown theorem {}", request.theorem)))?;
+        let own;
+        let tactics: &TacticsExpression = match &request.tactic {
+            Some(tactic_text) => {
+                own = self.parse_tactic(tactic_text)?;
+                &own
+            }
+            None => script.proof_line(theorem).ok_or_else(|| {
+                Failure::new("no-proof", format!("The library has no proof line for {}, and the request no tactic", request.theorem))
+            })?,
+        };
+        script.prove(theorem, tactics, trace, request.max_depth.unwrap_or(self.max_depth))
+    }
+
+    /// Reads a library: its tactics definitions and proof lines (its `load` is ignored, with a
+    /// warning).
+    pub(crate) fn load_script(&self, library: &Library, warnings: &mut Vec<String>) -> std::result::Result<Script, Failure> {
+        let (name, text) = match library {
             Library::Path(path) => {
                 let text = fs::read_to_string(path)
                     .map_err(|e| Failure::new("library-file", format!("Cannot read {}: {}", path, e)))?;
@@ -104,22 +126,13 @@ impl Engine {
             .map_err(|e| Failure::new("library-parse", e.describe()))?;
         let script = Script::parse(&mut parser).map_err(|e| Failure::new("library-parse", e.describe()))?;
         warnings.extend(parser.warnings.iter().cloned());
-        let theorem: Label = self
-            .db
-            .get_theorem_label(request.theorem.clone())
-            .ok_or_else(|| Failure::new("unknown-theorem", format!("Unknown theorem {}", request.theorem)))?;
-        let own;
-        let tactics: &TacticsExpression = match &request.tactic {
-            Some(tactic_text) => {
-                let mut parser = Parser::with_db("<tactic>".to_string(), tactic_text, self.db.clone(), true)
-                    .map_err(|e| Failure::new("tactic-parse", e.describe()))?;
-                own = parser.parse_tactics().map_err(|e| Failure::new("tactic-parse", e.describe()))?;
-                &own
-            }
-            None => script.proof_line(theorem).ok_or_else(|| {
-                Failure::new("no-proof", format!("The library has no proof line for {}, and the request no tactic", request.theorem))
-            })?,
-        };
-        script.prove(theorem, tactics, trace, request.max_depth.unwrap_or(self.max_depth))
+        Ok(script)
+    }
+
+    /// Reads a tactics expression.
+    pub(crate) fn parse_tactic(&self, text: &str) -> std::result::Result<TacticsExpression, Failure> {
+        let mut parser = Parser::with_db("<tactic>".to_string(), text, self.db.clone(), true)
+            .map_err(|e| Failure::new("tactic-parse", e.describe()))?;
+        parser.parse_tactics().map_err(|e| Failure::new("tactic-parse", e.describe()))
     }
 }

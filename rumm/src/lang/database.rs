@@ -292,6 +292,90 @@ impl Db {
         }
     }
 
+    pub(crate) fn database(&self) -> std::cell::Ref<'_, Database> {
+        self.intern.borrow()
+    }
+
+    /// The `$f` labels of a statement's frame, which key its substitutions, in order.
+    pub fn floating_labels(&self, label: Label) -> Vec<Label> {
+        let database = self.intern.borrow();
+        database.get_frame(label).map(|frame| frame.floating().collect()).unwrap_or_default()
+    }
+
+    /// Whether `label` names an axiom or a provable statement, which a step may cite.
+    pub fn is_assertion(&self, label: Label) -> bool {
+        let database = self.intern.borrow();
+        database
+            .statement_by_label(label)
+            .map(|sref| matches!(sref.statement_type(), StatementType::Axiom | StatementType::Provable))
+            .unwrap_or(false)
+    }
+
+    /// `count` distinct labels of the database, which stand for the hypotheses of a theorem
+    /// with no database statement (a new theorem): a hypothesis step only needs a label to
+    /// be told from the others.
+    pub fn placeholder_labels(&self, count: usize) -> Vec<Label> {
+        let database = self.intern.borrow();
+        let nset = database.name_result();
+        database
+            .statements()
+            .filter_map(|sref| nset.lookup_label(sref.label()).map(|l| l.atom))
+            .take(count)
+            .collect()
+    }
+
+    /// The name of the typecode of a formula.
+    pub fn typecode_name(&self, formula: &Formula) -> String {
+        let database = self.intern.borrow();
+        as_str(database.name_result().atom_name(formula.get_typecode())).to_string()
+    }
+
+    /// The name of the typecode of a statement.
+    pub fn label_typecode_name(&self, label: Label) -> String {
+        let database = self.intern.borrow();
+        as_str(database.name_result().atom_name(database.label_typecode(label))).to_string()
+    }
+
+    /// The formula of a step text without its typecode (`( ph -> ps )`), `Err` with the first
+    /// unknown symbol or the parse problem.
+    pub fn parse_expression(&self, body: &str) -> std::result::Result<Formula, String> {
+        let database = self.intern.borrow();
+        let nset = database.name_result();
+        let mut symbols: Vec<std::result::Result<FormulaToken, StmtParseError>> = Vec::new();
+        for name in body.split_whitespace() {
+            let symbol = nset.lookup_symbol(name.as_bytes()).ok_or_else(|| format!("unknown symbol {}", name))?;
+            symbols.push(Ok(FormulaToken { symbol: symbol.atom, span: metamath_rs::Span::new(0, 0) }));
+        }
+        let grammar = database.grammar_result().clone();
+        grammar
+            .parse_formula(&mut symbols.into_iter(), &grammar.typecodes(), false, nset)
+            .map_err(|e| format!("cannot parse the expression: {:?}", e))
+    }
+
+    /// The symbols of a formula, without its typecode.
+    pub fn expression_body(&self, formula: &Formula) -> String {
+        let database = self.intern.borrow();
+        let shown = format!("{}", formula.as_ref(&database));
+        match shown.split_once(' ') {
+            Some((_, body)) => body.to_string(),
+            None => String::new(),
+        }
+    }
+
+    /// The formula of the metavariable `&<letter><index>`, if declared.
+    pub fn metavariable(&self, letter: char, index: usize) -> Option<Formula> {
+        let typecode = self.metavariables.borrow().letters.get(&letter)?.clone();
+        let label = self.get_theorem_label(format!("{}{}{}", METAVARIABLE_LABEL_PREFIX, letter, index))?;
+        let database = self.intern.borrow();
+        let typecode = database.name_result().lookup_symbol(typecode.as_bytes())?.atom;
+        Some(Formula::from_float(label, typecode))
+    }
+
+    /// The letter of the metavariables of a typecode.
+    pub fn metavariable_letter(&self, typecode: &str) -> Option<char> {
+        self.metavariables.borrow().letters.iter().find(|(_, t)| t.as_str() == typecode).map(|(l, _)| *l)
+    }
+
     pub fn get_symbol(&self, name: String) -> Option<Symbol> {
         let database = self.intern.borrow();
         Some(database

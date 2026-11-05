@@ -4,6 +4,7 @@ mod apply;
 mod hypothesis;
 mod r#match;
 mod skipped;
+mod decide;
 mod subgoal;
 mod r#try;
 mod find_hyp;
@@ -19,6 +20,7 @@ use metamath_rs::formula::UnificationError;
 pub use r#match::Match;
 pub use r#try::Try;
 pub use skipped::Skipped;
+pub use decide::Decide;
 pub use subgoal::Subgoal;
 pub use find_hyp::FindHyp;
 pub use find::Find;
@@ -47,6 +49,10 @@ pub enum TacticsError {
     /// The finished proof still contains metavariables (their names, separated by spaces):
     /// they are neither bound nor part of the theorem, so the proof is not complete.
     UnresolvedMetavariables(String),
+    /// The proof still has open goals (a `{ decide ... }`), which a batch proof can't leave.
+    OpenGoals(String),
+    /// A fresh work variable could not be provided.
+    MetavariableUnavailable(String),
     WrongParameterCount(usize, usize),
     WrongHypCount(usize, usize),
     WrongTypecode(TypeCode, TypeCode, Label),

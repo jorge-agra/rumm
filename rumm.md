@@ -50,7 +50,17 @@ This is the simplest possible tactics: it attempts to match the goal with one of
 
 ### **The `?` built-in tactics**
 
-This is only a dummy proof placeholder. It always fails, but allows to build a syntactically correct Rumm file where a tactics is needed. Its syntax is a single question mark sign, `?`.
+This is only a dummy proof placeholder. In a batch run it always fails, but allows to build a syntactically correct Rumm file where a tactics is needed. Its syntax is a single question mark sign, `?`.
+
+In a [stepwise request](#stepwise-requests) (`apply`, see `PROTOCOL.md`) it does not fail: the goal becomes an **open goal** of the returned proof state.
+
+---
+
+### **The `decide` built-in tactics**
+
+`{ decide ring-eval simp }` leaves the goal to *deciders*, which are named. The names are free text (identifiers, possibly none); rumm does not know what they mean. In a stepwise request the goal is returned as an open goal tagged with the names (`"deciders": ["ring-eval", "simp"]`), and the caller hands it to whoever decides. It is the stage one of deciders: rumm never calls one.
+
+In a batch run nothing returns a state, so a proof with an open goal is not complete: it is reported as `Failure: OpenGoals(...)` naming the deciders. Inside `try` or `find` the tactics succeeds (it always does), so a `try` which should move on past it needs to be ordered after the alternatives that really prove the goal.
 
 ---
 
@@ -227,6 +237,16 @@ proof ~com23 {
 The metavariable  `&W3` holds the formula `( ps -> th )`, derived from the `match` tactics. The explicit substitution list given as parameter to the `use` tactics is then used to replace `ps` with `ch` in `&W3`, therefore deriving `( ch -> th )`, which is the sub-formula we need to prove [~com23](https://us.metamath.org/mpeuni/com23.html).
 
 ---
+
+## Stepwise requests
+
+Besides the batch run (`rumm file.rmm`), a caller who holds a *proof state* can ask rumm to apply one tactics to one of its open goals (`apply`, in `rumm serve`; the format is in `PROTOCOL.md`). The state is given in full and returned in full, rumm keeps nothing. Running the tactics is the same as in a batch run, with these differences, which apply to a stepwise request only:
+
+- **`?` and `decide` leave open goals.** The tactics which fail still fail their branch, so `try`, `match` and `find` branch as before. A leaf which is `?` or `{ decide ... }` is not a failure: the goal becomes an open goal in the new state.
+- **Partial progress.** A tactics which gets as far as `?` or `decide` leaves keeps what it did before. `tactics half () { apply ~syl ? ? }` applied to `( ph -> ch )` cites `syl` and returns the two open goals `( ph -> &W1 )` and `( &W1 -> ch )`. A tactics which fails anywhere else returns nothing: the state is unchanged.
+- **Work variables.** What `apply ~syl` leaves undetermined (the `ps` of the example) is a fresh work variable, never a variable of the cited statement, which would read as the theorem's own. The goal may hold work variables itself: `apply` and `!` bind them when the statement or the hypothesis fixes them (`( ph -> &W1 )` with `apply ~id` binds `&W1` to `ph`), and the binding is applied to every step and open goal of the returned state, and to the subgoals after the one which bound it. A tactics written in a library should not use the work variable names of the state in its own `match` patterns (`&W1` there is a pattern variable, not the state's).
+- **`find`, `finddf`, `findhyp` and `match` do not bind the work variables of the goal** (their metavariables are patterns, as in a batch run). Use `apply` and `!` to bind.
+- **Limits.** A goal closed by a hypothesis alone (`!` as the whole tactics) is not a step of its own: the steps which cited it cite the hypothesis. That is refused for the conclusion, which nothing cites. A `subgoal` does not pass the work variables bound in its first tactics to its second.
 
 ## Depth limit
 

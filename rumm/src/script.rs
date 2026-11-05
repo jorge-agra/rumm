@@ -109,6 +109,17 @@ impl Script {
         let outcome = catch_unwind(AssertUnwindSafe(|| {
             prove_theorem(theorem, tactics, self.db.clone(), self.tactics_definitions.clone(), max_depth, trace)
                 .and_then(|step| {
+                    // A proof with an open goal (a `decide`) is not complete either.
+                    let open = step.open_goals();
+                    if !open.is_empty() {
+                        let deciders: Vec<String> =
+                            open.iter().filter_map(|(_, d)| d.as_ref()).flatten().cloned().collect();
+                        return Err(TacticsError::OpenGoals(format!(
+                            "{} goal(s) left open{}",
+                            open.len(),
+                            if deciders.is_empty() { String::new() } else { format!(" for the deciders {}", deciders.join(" ")) }
+                        )));
+                    }
                     // A proof with a metavariable left is not complete.
                     let unresolved = step.unresolved_metavariables(&self.db);
                     if !unresolved.is_empty() {
@@ -151,7 +162,7 @@ impl Failure {
 
     /// The kind is the name of the `TacticsError` variant in kebab-case (`no-match-found`), the
     /// message its debug text.
-    fn from_tactics_error(error: &TacticsError) -> Self {
+    pub(crate) fn from_tactics_error(error: &TacticsError) -> Self {
         let message = format!("{:?}", error);
         let variant = message.split(|c| c == '(' || c == ' ').next().unwrap_or("");
         let mut kind = String::new();

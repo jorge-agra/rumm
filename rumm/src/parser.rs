@@ -268,6 +268,16 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// An identifier, or `None` at the closing curly bracket (which it consumes).
+    pub fn parse_optional_identifier(&mut self) -> Result<Option<String>> {
+        match self.next_token() {
+            Some(Token::Identifier(name)) => Ok(Some(name)),
+            Some(Token::CurlyBracketClose) => Ok(None),
+            Some(token) => Err(self.parse_error("An identifier or '}'", token)),
+            None => Err(self.unexpected_end_of_file("An identifier or '}'")),
+        }
+    }
+
     pub fn parse_optional_statement(&mut self) -> Result<Option<Label>> {
         match self.next_token() {
             Some(Token::CurlyBracketClose) => Ok(None),
@@ -331,6 +341,7 @@ impl<'a> Parser<'a> {
                     "find" => TacticsExpression::cst(Find::parse(self)?.into_arc()),
                     "finddf" => TacticsExpression::cst(FindDf::parse(self)?.into_arc()),
                     "findhyp" => TacticsExpression::cst(FindHyp::parse(self)?.into_arc()),
+                    "decide" => TacticsExpression::cst(Decide::parse(self)?.into_arc()),
                     _ => Err(Error::UnknownTacticsName(self.location(), name)),
                 },
                 Some(token) => Err(self.parse_error("A tactics name", token)),
@@ -451,6 +462,7 @@ impl<'a> Parser<'a> {
                     "find" => Expression::tactics(Find::parse(self)?.into_arc()),
                     "finddf" => Expression::tactics(FindDf::parse(self)?.into_arc()),
                     "findhyp" => Expression::tactics(FindHyp::parse(self)?.into_arc()),
+                    "decide" => Expression::tactics(Decide::parse(self)?.into_arc()),
                     _ => Err(Error::UnknownTacticsName(self.location(), name)),
                 },
                 Some(token) => Err(self.parse_error("A tactics name", token)),

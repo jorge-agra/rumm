@@ -1,5 +1,6 @@
 //! The JSON-lines protocol (see `PROTOCOL.md`): one JSON object per line in, one per line out.
 
+use crate::stepwise::{ApplyRequest, State};
 use crate::{Engine, Failure, Library, ProveRequest, TraceSink};
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
@@ -56,6 +57,7 @@ fn handle(engine: &mut Engine, id: &Value, request: &Map<String, Value>, trace: 
                 }
             }
         },
+        Some("apply") => handle_apply(engine, id, request, trace),
         Some(other) => failure(id.clone(), Failure::new("unknown-method", format!("unknown method \"{}\"", other))),
     }
 }
@@ -84,4 +86,57 @@ fn parse_prove(request: &Map<String, Value>) -> std::result::Result<ProveRequest
         })? as usize),
     };
     Ok(ProveRequest { library, theorem, tactic: text_field(request, "tactic")?, max_depth })
+}
+
+fn max_depth(request: &Map<String, Value>) -> std::result::Result<Option<usize>, Failure> {
+    match request.get("max_depth") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => Ok(Some(value.as_u64().ok_or_else(|| {
+            Failure::new("invalid-request", "field \"max_depth\" must be a non-negative integer")
+        })? as usize)),
+    }
+}
+
+fn parse_apply(request: &Map<String, Value>) -> std::result::Result<ApplyRequest, Failure> {
+    let library = match (text_field(request, "library")?, text_field(request, "library_text")?) {
+        (Some(path), None) => Library::Path(path),
+        (None, Some(text)) => Library::Text(text),
+        (None, None) => Library::Text(String::new()),
+        (Some(_), Some(_)) => return Err(Failure::new("invalid-request", "give \"library\" or \"library_text\", not both")),
+    };
+    let state = request.get("state").ok_or_else(|| Failure::new("missing-field", "missing field \"state\" (an object)"))?;
+    let state: State = serde_json::from_value(state.clone())
+        .map_err(|e| Failure::new("invalid-request", format!("field \"state\": {}", e)))?;
+    let goal = text_field(request, "goal")?
+        .ok_or_else(|| Failure::new("missing-field", "missing field \"goal\" (a step label)"))?;
+    let tactic = text_field(request, "tactic")?
+        .ok_or_else(|| Failure::new("missing-field", "missing field \"tactic\" (a tactics expression)"))?;
+    Ok(ApplyRequest { library, state, goal, tactic, max_depth: max_depth(request)? })
+}
+
+/// `apply`: on failure the state is the one of the request, as it was sent.
+fn handle_apply(engine: &mut Engine, id: &Value, request: &Map<String, Value>, trace: Option<TraceSink>) -> Value {
+    let unchanged = request.get("state").cloned().unwrap_or(Value::Null);
+    let rejected = |error: Failure, open: Vec<Value>, warnings: Vec<String>| {
+        json!({ "id": id, "ok": false, "produced": [], "updated": [], "removed": [], "state": unchanged, "open": open,
+                "proved": false, "error": error, "warnings": warnings })
+    };
+    let apply = match parse_apply(request) {
+        Ok(apply) => apply,
+        Err(error) => return rejected(error, vec![], vec![]),
+    };
+    let still_open: Vec<Value> = apply
+        .state
+        .steps
+        .iter()
+        .filter(|s| s.reference.is_none() && !(s.label.starts_with('h') && s.label[1..].bytes().all(|b| b.is_ascii_digit()) && s.label.len() > 1))
+        .map(|s| json!({ "label": s.label, "expr": s.expr, "deciders": s.deciders }))
+        .collect();
+    let outcome = engine.apply(&apply, trace);
+    match outcome.result {
+        Ok(done) => json!({ "id": id, "ok": true, "produced": done.produced, "updated": done.updated, "removed": done.removed,
+                            "state": done.state, "open": done.open, "proved": done.proved,
+                            "error": null, "warnings": outcome.warnings }),
+        Err(error) => rejected(error, still_open, outcome.warnings),
+    }
 }
