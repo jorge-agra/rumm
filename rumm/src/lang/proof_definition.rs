@@ -1,5 +1,5 @@
 use crate::lang::TacticsExpression;
-use crate::context::Context;
+use crate::context::{Context, TraceSink};
 use crate::error::Result;
 use crate::lang::TacticsDict;
 use crate::lang::{Db, Display};
@@ -163,20 +163,41 @@ impl Parse for ProofDefinition {
 }
 
 impl ProofDefinition {
-    pub fn prove(&self, db: Db, tactics_definitions: TacticsDict, max_depth: usize) -> std::result::Result<ProofStep, TacticsError> {
-        if let Some((theorem_formula, essential_hypotheses)) = db.get_theorem_formulas(self.theorem) {
-            println!("====================================================\n\n");
-            println!("Proof for {:?}:", self.theorem.to_string(&db));
-            let mut context =
-                Context::new(db.clone(), theorem_formula, Some(self.theorem), essential_hypotheses, tactics_definitions, max_depth);
-            self.tactics.execute(&mut context)
-        } else {
-            println!("Unknown theorem {:?}!", self.theorem);
-            Err(TacticsError::UnknownLabel(self.theorem))
-        }
+    pub fn prove(&self, db: Db, tactics_definitions: TacticsDict, max_depth: usize, trace: Option<TraceSink>) -> std::result::Result<ProofStep, TacticsError> {
+        prove_theorem(self.theorem, &self.tactics, db, tactics_definitions, max_depth, trace)
     }
 
     pub fn theorem(&self) -> Label {
         self.theorem
+    }
+
+    pub fn tactics(&self) -> &TacticsExpression {
+        &self.tactics
+    }
+}
+
+/// Runs `tactics` on the statement of `theorem`, with its essential hypotheses.
+pub fn prove_theorem(
+    theorem: Label,
+    tactics: &TacticsExpression,
+    db: Db,
+    tactics_definitions: TacticsDict,
+    max_depth: usize,
+    trace: Option<TraceSink>,
+) -> std::result::Result<ProofStep, TacticsError> {
+    let say = |text: String| {
+        if let Some(trace) = &trace {
+            trace(&text);
+        }
+    };
+    if let Some((theorem_formula, essential_hypotheses)) = db.get_theorem_formulas(theorem) {
+        say("====================================================\n\n".to_string());
+        say(format!("Proof for {:?}:", theorem.to_string(&db)));
+        let mut context =
+            Context::new(db.clone(), theorem_formula, Some(theorem), essential_hypotheses, tactics_definitions, max_depth, trace.clone());
+        tactics.execute(&mut context)
+    } else {
+        say(format!("Unknown theorem {:?}!", theorem));
+        Err(TacticsError::UnknownLabel(theorem))
     }
 }

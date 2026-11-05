@@ -74,6 +74,8 @@ pub fn scan_metavariables(text: &str) -> BTreeMap<char, usize> {
 pub struct Db {
     intern: Arc<RefCell<Database>>,
     metavariables: Arc<RefCell<Metavariables>>,
+    /// Whether loading prints its progress on stdout (the batch command line does).
+    verbose: bool,
 }
 
 impl Default for Db {
@@ -86,11 +88,23 @@ impl Default for Db {
         Db {
             intern: Arc::new(RefCell::new(Database::new(options))),
             metavariables: Arc::new(RefCell::new(Metavariables::default())),
+            verbose: true,
         }
     }
 }
 
 impl Db {
+    /// Chooses whether loading prints its progress on stdout (the default), or nothing.
+    pub fn set_verbose(&mut self, verbose: bool) {
+        self.verbose = verbose;
+    }
+
+    fn progress(&self, text: String) {
+        if self.verbose {
+            print!("{}", text);
+        }
+    }
+
     /// Loads the plain database `filename`, and declares the metavariables of the scripts.
     ///
     /// The database is loaded through a synthetic in-memory root file which includes it, then
@@ -98,7 +112,7 @@ impl Db {
     /// first parsed with the include alone to learn the typecodes, then with the declarations;
     /// the second parse reuses the file already read.
     pub fn parse(&mut self, filename: &str) -> Result {
-        print!("Loading \"{}\" ... ", filename);
+        self.progress(format!("Loading \"{}\" ... ", filename));
         {
             let mut meta = self.metavariables.borrow_mut();
             meta.file = filename.to_string();
@@ -120,7 +134,7 @@ impl Db {
         }
         self.declare_metavariables(false)?;
         self.check_diagnostics(filename)?;
-        println!("{}", "ok".green());
+        self.progress(format!("{}\n", "ok".green()));
         self.run_passes(filename)
     }
 
@@ -243,21 +257,21 @@ impl Db {
 
     fn run_passes(&self, filename: &str) -> Result {
         let mut database = self.intern.borrow_mut();
-        print!("Building \"{}\" grammar... ", filename);
+        self.progress(format!("Building \"{}\" grammar... ", filename));
         database.grammar_pass();
         let gerr = database.diag_notations();
         if !gerr.is_empty() {
             return Err(Error::DBError(filename.to_string(), gerr).into());
         }
-        println!("{}", "ok".green());
+        self.progress(format!("{}\n", "ok".green()));
 
-        print!("Parsing \"{}\"... ", filename);
+        self.progress(format!("Parsing \"{}\"... ", filename));
         database.stmt_parse_pass();
         let gerr = database.diag_notations();
         if !gerr.is_empty() {
             return Err(Error::DBError(filename.to_string(), gerr).into());
         }
-        println!("{}", "ok".green());
+        self.progress(format!("{}\n", "ok".green()));
         Ok(())
     }
 

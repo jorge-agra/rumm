@@ -20,5 +20,6 @@ pub use expression::SubstitutionListExpression;
 pub use parameter_definition::ParameterDefinition;
 pub use proof_definition::ProofDefinition;
 pub use proof_definition::ProofStep;
+pub use proof_definition::prove_theorem;
 pub use tactics_definition::TacticsDefinition;
 pub use tactics_definition::TacticsDict;

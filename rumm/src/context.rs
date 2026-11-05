@@ -14,6 +14,10 @@ use metamath_rs::Formula;
 use metamath_rs::Label;
 use std::collections::HashMap;
 
+/// Where the trace of a proof search goes: called with each line, indented by depth.
+/// The batch command line prints them on stdout; a library user decides.
+pub type TraceSink = Arc<dyn Fn(&str)>;
+
 /// The default limit on the nesting depth of tactics, see `Context::max_depth`.
 pub const DEFAULT_MAX_DEPTH: usize = 100;
 
@@ -34,6 +38,7 @@ pub struct Context {
     subst_variables: HashMap<String, Substitutions>,
     depth: usize,
     max_depth: usize,
+    trace: Option<TraceSink>,
 }
 
 impl Debug for Context {
@@ -50,6 +55,7 @@ impl<'a> Context {
         hypotheses: Hypotheses,
         tactics_definitions: TacticsDict,
         max_depth: usize,
+        trace: Option<TraceSink>,
     ) -> Self {
         let subgoals = vec![];
         Context {
@@ -66,6 +72,7 @@ impl<'a> Context {
             subst_variables: HashMap::default(),
             depth: 0,
             max_depth,
+            trace,
         }
     }
 
@@ -81,7 +88,9 @@ impl<'a> Context {
     }
 
     pub fn message(&self, message: &str) {
-        println!("{:indent$}{message}", "", indent = self.depth);
+        if let Some(trace) = &self.trace {
+            trace(&format!("{:indent$}{message}", "", indent = self.depth));
+        }
     }
 
     pub fn enter(&self, message: &str) {
@@ -112,6 +121,7 @@ impl<'a> Context {
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
             max_depth: self.max_depth,
+            trace: self.trace.clone(),
         }
     }
 
@@ -132,6 +142,7 @@ impl<'a> Context {
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
             max_depth: self.max_depth,
+            trace: self.trace.clone(),
         }
     }
 
@@ -150,6 +161,7 @@ impl<'a> Context {
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
             max_depth: self.max_depth,
+            trace: self.trace.clone(),
         }
     }
 

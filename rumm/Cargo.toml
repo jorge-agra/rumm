@@ -18,3 +18,13 @@ thiserror = "1.0"
 annotate-snippets = "0.9"
 simple_logger = "1.13.0"
 metamath-rs = { git = "https://github.com/metamath/metamath-knife", tag="v0.3.9"}
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lib]
+name = "rumm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rumm"
+path = "src/main.rs"

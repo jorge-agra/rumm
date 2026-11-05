@@ -68,6 +68,22 @@ impl Error {
         data.iter().fold(String::new(), |s, (saddr, diag)| format!("{}\n{:?}:{:?}", s, saddr, diag))
     }
 
+    /// The error as one text: where it happened, if it has a place in the source, then the
+    /// message of each cause.
+    pub fn describe(&self) -> String {
+        let mut text = String::new();
+        if let Some(location) = self.location() {
+            text.push_str(&format!("{}:{}: ", location.filename, location.line_number));
+        }
+        text.push_str(&self.to_string());
+        let mut cause = self.caused_by();
+        while let Some(error) = cause {
+            text.push_str(&format!(": {}", error));
+            cause = error.caused_by();
+        }
+        text
+    }
+
     pub fn caused_by(&self) -> Option<&Error> {
         match self {
             Error::TacticsParameterParseError(e, _) => Some(&*e),
