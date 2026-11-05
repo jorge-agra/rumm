@@ -46,12 +46,16 @@ impl Tactics for Try {
     fn execute(&self, context: &mut Context) -> TacticsResult {
         context.enter("Try");
         for t in &self.tactics {
+            // A failed branch leaves nothing behind: not even the numbers of the fresh work
+            // variables it handed out (a stepwise run).
+            let mark = context.fresh_mark();
             match t.execute(context) {
                 Ok(step) => {
                     context.exit("Try Successful");
                     return Ok(step);
                 },
                 Err(e) => {
+                    context.fresh_reset(mark);
                     context.message(format!("{:?}",e).as_str());
                 },
             }

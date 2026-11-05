@@ -1,0 +1,11 @@
+load "meta.mm"
+
+// The substitution leaves the metavariable `&W1` in the proof: it is unresolved, not a success.
+proof ~idth { apply ~id with ~wph $ &W1 $ }
+
+// A metavariable which a `match` binds is replaced: the proof is complete.
+proof ~idth { match goal $ ( &W1 -> &W1 ) $ { apply ~id with ~wph $ &W1 $ } }
+
+// Same shape as the `df-mod` justify demo: an unbound metavariable, given as the substitution
+// of a variable, ends up in the proof.
+proof ~c0id { apply ~eqid with ~cA $ &C2 $ }

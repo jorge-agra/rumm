@@ -1,6 +1,6 @@
 use crate::context::Context;
 use crate::error::Result;
-use crate::lang::{Db, Display};
+use crate::lang::{Db, Display, ProofStep};
 use crate::parser::{Parse, Parser};
 use crate::tactics::Tactics;
 use crate::tactics::TacticsError;
@@ -36,6 +36,11 @@ impl Tactics for Skipped {
 
     fn execute(&self, context: &mut Context) -> TacticsResult {
         context.enter("Skip");
+        if context.stepwise() {
+            // A stepwise run keeps the goal as an open goal of the returned proof state.
+            context.exit("Left open");
+            return Ok(ProofStep::open(context.goal().clone(), None));
+        }
         context.exit("Skipped!");
         Err(TacticsError::Skipped)
     }

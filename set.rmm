@@ -1,5 +1,5 @@
 // Load the main set.mm database
-load "examples/examples.mm"
+load "examples/rummex1.mm"
 
 // Fetch hypotheses from the hypothesis or the 'antecedent' part of the goal
 // This is useful to prove theorems written in the 'deduction' form.

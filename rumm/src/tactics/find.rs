@@ -13,6 +13,7 @@ use crate::tactics::Tactics;
 use crate::tactics::TacticsError;
 use crate::tactics::TacticsResult;
 use core::fmt::Formatter;
+use std::collections::BTreeSet;
 
 /// Generic trait for finding a theorem among all database statements to prove the goal.
 trait FilterFind {
@@ -44,6 +45,8 @@ impl dyn FilterFind {
         for (label, formula, hyps) in context.clone().statements(|is_axiom, label| self.filter(is_axiom, label)) {
             if let Ok(step) = self.check_match(context, &target, &formula, &tactics2,|subst| {
                 context.message(&format!("Found match with {}", DisplayPair(&label, &context.db)));
+                // A citation violating a `$d` fails now, so that the next statement is tried.
+                context.db.check_distinct(context.theorem(), label, subst, context.variables(), &mut BTreeSet::new())?;
                 // context.message(&format!("  subst:{}", DisplayPair(subst, &context.db)));
                 let mut substeps = vec![];
                 let mut failed = false;
@@ -62,6 +65,7 @@ impl dyn FilterFind {
                 context.message(&format!("  subgoal = {}", DisplayPair(&subgoal, &context.db)));
                 let mut subgoal_subst = Substitutions::new();
                 subgoal.unify(&formula, &mut subgoal_subst)?;
+                context.db.check_distinct(context.theorem(), label, &subgoal_subst, context.variables(), &mut BTreeSet::new())?;
                 Ok(ProofStep::apply(
                     label,
                     substeps.into_boxed_slice(),
@@ -77,10 +81,34 @@ impl dyn FilterFind {
         Err(TacticsError::NoMatchFound)
     }
 
+    /// Unify the `target` with a database `formula`, in whichever direction applies.
+    ///
+    /// `a.unify(&b)` binds the variables of `b` (the model) to sub-formulas of `a`; the
+    /// variables of `a` are then treated as constants. Two situations occur in `find`:
+    ///  - the target is an instance of the statement (e.g. the goal `|- ( T. <-> ( ( ph -> ps ) -> ( ph -> ps ) ) )`
+    ///    for `df-tru`), so the *statement's* variables must be bound: `target.unify(formula)`.
+    ///    This was the case fixed by upstream 65b1343 (tirix/rumm#20), and is tried first.
+    ///  - the target contains metavariables (`&C3`) to be bound to parts of the statement:
+    ///    `formula.unify(target)`, which was the only order before 65b1343. As this treats every
+    ///    target variable, metavariable or not, as bindable, the result is only accepted if
+    ///    instantiating the target with it really gives the statement.
+    fn unify_either_way(target: &Formula, formula: &Formula) -> std::result::Result<Substitutions, TacticsError> {
+        let mut subst = Substitutions::new();
+        if target.unify(formula, &mut subst).is_ok() {
+            return Ok(subst);
+        }
+        let mut subst = Substitutions::new();
+        formula.unify(target, &mut subst)?;
+        if target.substitute(&subst) == *formula {
+            Ok(subst)
+        } else {
+            Err(TacticsError::UnificationFailed)
+        }
+    }
+
     fn check_match<F>(&self, context: &Context, target: &Formula, formula: &Formula, tactics2: &TacticsExpression, make_proof_step: F) -> TacticsResult
         where F: Fn(&Box<Substitutions>) -> TacticsResult {
-        let mut subst = Substitutions::new();
-        target.unify(&formula, & mut subst)?;
+        let subst = Self::unify_either_way(target, formula)?;
         let step1 = make_proof_step(&Box::new(subst.clone()))?;
         let mut context2 = context.with_variables(&subst);
         context2.add_subgoal(step1.result().clone(), step1);

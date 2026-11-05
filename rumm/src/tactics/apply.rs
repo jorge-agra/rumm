@@ -1,4 +1,6 @@
-use crate::lang::DisplayPair;
+use crate::lang::{compose_bindings, DisplayPair, Term};
+use metamath_rs::Label;
+use std::collections::HashMap;
 use crate::lang::SubstitutionListExpression;
 use metamath_rs::formula::Substitutions;
 use crate::lang::TacticsExpression;
@@ -12,6 +14,7 @@ use crate::tactics::Tactics;
 use crate::tactics::TacticsError;
 use crate::tactics::TacticsResult;
 use core::fmt::Formatter;
+use std::collections::BTreeSet;
 
 
 /// A tactics which applies a given theorem to prove the goal.
@@ -78,6 +81,13 @@ impl Tactics for Apply {
 
         let theorem = self.theorem.evaluate(context)?;
         context.message(&format!(" Attempting apply {}", DisplayPair(&theorem, &context.db)));
+        if !context.db.precedes(theorem, context.theorem()) {
+            context.exit("Apply statement is not before the theorem");
+            return Err(TacticsError::CitedAfterGoal(context.db.label_name(theorem)));
+        }
+        if context.stepwise() {
+            return self.execute_stepwise(context, theorem, my_subst);
+        }
         if let Some((theorem_formula, hyps)) = context.get_theorem_formulas(theorem) {
             let mut subst = Substitutions::new();
             if let Err(e) = context.goal().unify(&theorem_formula, &mut subst) {
@@ -85,6 +95,10 @@ impl Tactics for Apply {
                 return Err(e.into());
             }
             subst.extend(&my_subst);
+            if let Err(e) = context.db.check_distinct(context.theorem(), theorem, &subst, context.variables(), &mut BTreeSet::new()) {
+                context.exit(&format!("Apply violates $d: {:?}", e));
+                return Err(e);
+            }
             // context.message(&format!("  subst:{}", DisplayPair(&subst, &context.db)));
             if hyps.len() == self.subtactics.len() {
                 let mut substeps = vec![];
@@ -109,5 +123,83 @@ impl Tactics for Apply {
             context.exit("Unknown theorem label");
             Err(TacticsError::UnknownLabel(theorem))
         }
+    }
+}
+
+impl Apply {
+    /// The application of a stepwise run. The goal may hold work variables, which the
+    /// statement can bind; the variables of the statement the goal doesn't determine become
+    /// fresh work variables (the subgoals can't hold the statement's own variables, which
+    /// would read as the theorem's); and the work variables bound while proving a subgoal are
+    /// substituted in the subgoals after it. The bindings are kept in the returned step, so a
+    /// branch which fails leaves none behind.
+    fn execute_stepwise(&self, context: &mut Context, theorem: Label, my_subst: Substitutions) -> TacticsResult {
+        let Some((theorem_formula, hyps)) = context.get_theorem_formulas(theorem) else {
+            context.exit("Unknown theorem label");
+            return Err(TacticsError::UnknownLabel(theorem));
+        };
+        if hyps.len() != self.subtactics.len() {
+            context.exit("Apply Hyps don't match");
+            return Err(TacticsError::WrongHypCount(self.subtactics.len(), hyps.len()));
+        }
+        let db = context.db.clone();
+        let unified = match db.unify_terms(context.goal(), &theorem_formula, true) {
+            Ok(unified) => unified,
+            Err(e) => {
+                context.exit("Apply statement doesn't match");
+                return Err(e);
+            }
+        };
+        // What the statement leaves undetermined gets a fresh work variable, one per variable.
+        let mut fresh: HashMap<Label, Term> = HashMap::new();
+        let mut residual = |variable: Label| -> TacticsResult<Term> {
+            if let Some(term) = fresh.get(&variable) {
+                return Ok(term.clone());
+            }
+            let typecode = db.label_typecode_name(variable);
+            let formula = context.fresh_metavariable(&typecode)?;
+            let term = db.term_of(&formula, false);
+            fresh.insert(variable, term.clone());
+            Ok(term)
+        };
+        let mut subst = Substitutions::new();
+        for variable in db.floating_labels(theorem) {
+            if let Some(given) = my_subst.get(variable) {
+                subst.insert(variable, given.clone());
+                continue;
+            }
+            let term = unified.model.get(&variable).cloned().unwrap_or(Term::Model(variable));
+            subst.insert(variable, db.formula_of(&term.replace_model(&mut residual)?)?);
+        }
+        let mut bindings = Substitutions::new();
+        for (meta, term) in unified.meta.iter() {
+            bindings.insert(*meta, db.formula_of(&term.replace_model(&mut residual)?)?);
+        }
+        // The instance of the statement must be the goal, as bound.
+        if theorem_formula.substitute(&subst).substitute(&bindings) != context.goal().substitute(&bindings) {
+            context.exit("Apply substitution doesn't match the goal");
+            return Err(TacticsError::UnificationFailed);
+        }
+        if let Err(e) = db.check_distinct(context.theorem(), theorem, &subst, context.variables(), &mut BTreeSet::new()) {
+            context.exit(&format!("Apply violates $d: {:?}", e));
+            return Err(e);
+        }
+        let mut known = bindings.clone();
+        let mut substeps = vec![];
+        for ((_hyp_label, hyp_formula), tactics) in hyps.iter().zip(&self.subtactics) {
+            let sub_goal = hyp_formula.substitute(&subst).substitute(&known);
+            let mut sub_context = context.with_goal(sub_goal);
+            let step = tactics.execute(&mut sub_context)?;
+            compose_bindings(&mut known, &step.bindings());
+            substeps.push(step);
+        }
+        context.exit("Apply Unification success");
+        Ok(ProofStep::apply_binding(
+            theorem,
+            substeps.into_boxed_slice(),
+            context.goal().clone(),
+            Box::new(subst),
+            bindings,
+        ))
     }
 }

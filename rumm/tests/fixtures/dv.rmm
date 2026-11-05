@@ -1,0 +1,17 @@
+load "dv.mm"
+
+// 1. The theorem declares $d x ph: the citation is fine, and the proof exports the $d.
+proof ~dvok { apply ~ax-5 }
+
+// 2. No $d declared: the first branch fails, `try` moves to the second one.
+proof ~dvbad { try { apply ~ax-5 } { apply ~ax-5alt } }
+
+// 3. Without an alternative, the proof fails.
+proof ~dvbad { apply ~ax-5 }
+
+// 4. `ph` is bound to `x = y`, which contains `x`.
+proof ~dvshared { try { apply ~ax-5 } { apply ~ax-5alt } }
+proof ~dvshared { apply ~ax-5 }
+
+// 5. `find` skips the statement violating its $d, and takes the next one.
+proof ~dvbad { find ! goal ! }

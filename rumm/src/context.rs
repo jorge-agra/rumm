@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use crate::tactics::Tactics;
+use crate::tactics::TacticsError;
+use crate::tactics::TacticsResult;
 use crate::lang::ProofStep;
 use crate::lang::Db;
 use crate::lang::DisplayPair;
@@ -10,12 +12,24 @@ use core::fmt::{Debug, Formatter};
 use metamath_rs::formula::Substitutions;
 use metamath_rs::Formula;
 use metamath_rs::Label;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
+
+/// Where the trace of a proof search goes: called with each line, indented by depth.
+/// The batch command line prints them on stdout; a library user decides.
+pub type TraceSink = Arc<dyn Fn(&str)>;
+
+/// The default limit on the nesting depth of tactics, see `Context::max_depth`.
+pub const DEFAULT_MAX_DEPTH: usize = 100;
 
 #[derive(Clone)]
 pub struct Context {
     pub(crate) db: Db,
     goal: Formula,
+    /// The theorem being proved, which gives the database position and the `$d` of the goal.
+    /// `None` for a goal which is not a database theorem.
+    theorem: Option<Label>,
     hypotheses: Hypotheses,
     subgoals: Vec<(Formula, ProofStep)>,
     tactics_definitions: TacticsDict,
@@ -25,6 +39,14 @@ pub struct Context {
     formula_variables: HashMap<String, Formula>,
     subst_variables: HashMap<String, Substitutions>,
     depth: usize,
+    max_depth: usize,
+    trace: Option<TraceSink>,
+    /// Whether the tactics run for a proof state (`apply` request): `?` leaves an open goal
+    /// and applications bind work variables. See `Context::stepwise`.
+    stepwise: bool,
+    /// The highest index of each work variable letter handed out as fresh, shared by every
+    /// context of the run.
+    fresh: Rc<RefCell<BTreeMap<char, usize>>>,
 }
 
 impl Debug for Context {
@@ -37,13 +59,17 @@ impl<'a> Context {
     pub fn new(
         db: Db,
         goal: Formula,
+        theorem: Option<Label>,
         hypotheses: Hypotheses,
         tactics_definitions: TacticsDict,
+        max_depth: usize,
+        trace: Option<TraceSink>,
     ) -> Self {
         let subgoals = vec![];
         Context {
             db,
             goal,
+            theorem,
             hypotheses,
             subgoals,
             tactics_definitions,
@@ -53,11 +79,28 @@ impl<'a> Context {
             formula_variables: HashMap::default(),
             subst_variables: HashMap::default(),
             depth: 0,
+            max_depth,
+            trace,
+            stepwise: false,
+            fresh: Rc::new(RefCell::new(BTreeMap::new())),
+        }
+    }
+
+    /// Fails with `DepthLimitExceeded` once tactics are nested deeper than the limit.
+    /// A tactics which keeps calling itself (directly or through others) ends up here,
+    /// as a failure which `try` can recover from, rather than overflowing the stack.
+    pub fn check_depth(&self) -> TacticsResult<()> {
+        if self.depth > self.max_depth {
+            Err(TacticsError::DepthLimitExceeded(self.max_depth))
+        } else {
+            Ok(())
         }
     }
 
     pub fn message(&self, message: &str) {
-        println!("{:indent$}{message}", "", indent = self.depth);
+        if let Some(trace) = &self.trace {
+            trace(&format!("{:indent$}{message}", "", indent = self.depth));
+        }
     }
 
     pub fn enter(&self, message: &str) {
@@ -77,6 +120,7 @@ impl<'a> Context {
         Self {
             db: self.db.clone(),
             goal,
+            theorem: self.theorem,
             hypotheses: self.hypotheses.clone(),
             subgoals: self.subgoals.clone(),
             tactics_definitions: self.tactics_definitions.clone(),
@@ -86,6 +130,10 @@ impl<'a> Context {
             formula_variables: self.formula_variables.clone(),
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
+            max_depth: self.max_depth,
+            trace: self.trace.clone(),
+            stepwise: self.stepwise,
+            fresh: self.fresh.clone(),
         }
     }
 
@@ -95,6 +143,7 @@ impl<'a> Context {
         Self {
             db: self.db.clone(),
             goal: self.goal.clone(),
+            theorem: self.theorem,
             hypotheses: self.hypotheses.clone(),
             subgoals: self.subgoals.clone(),
             tactics_definitions: self.tactics_definitions.clone(),
@@ -104,6 +153,10 @@ impl<'a> Context {
             formula_variables: self.formula_variables.clone(),
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
+            max_depth: self.max_depth,
+            trace: self.trace.clone(),
+            stepwise: self.stepwise,
+            fresh: self.fresh.clone(),
         }
     }
 
@@ -111,6 +164,7 @@ impl<'a> Context {
         Self {
             db: self.db.clone(),
             goal: self.goal.clone(),
+            theorem: self.theorem,
             hypotheses: self.hypotheses.clone(),
             subgoals: self.subgoals.clone(),
             tactics_definitions: self.tactics_definitions.clone(),
@@ -120,6 +174,10 @@ impl<'a> Context {
             formula_variables: self.formula_variables.clone(),
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
+            max_depth: self.max_depth,
+            trace: self.trace.clone(),
+            stepwise: self.stepwise,
+            fresh: self.fresh.clone(),
         }
     }
 
@@ -156,6 +214,51 @@ impl<'a> Context {
         f.get_by_path(&[])
     }
 
+    /// Makes this the context of a stepwise run: `?` leaves an open goal, applications bind
+    /// the work variables of the goal, and fresh work variables are numbered after `highest`
+    /// (the highest index in use, by letter).
+    pub fn set_stepwise(&mut self, highest: BTreeMap<char, usize>) {
+        self.stepwise = true;
+        self.fresh = Rc::new(RefCell::new(highest));
+    }
+
+    pub fn stepwise(&self) -> bool {
+        self.stepwise
+    }
+
+    /// A work variable no goal of the state uses: the next index of its letter, declared if
+    /// needed. `typecode` is the name of the typecode the variable has.
+    pub fn fresh_metavariable(&self, typecode: &str) -> TacticsResult<Formula> {
+        let letter = self.db.metavariable_letter(typecode).ok_or_else(|| {
+            TacticsError::MetavariableUnavailable(format!("no work variable letter for typecode {}", typecode))
+        })?;
+        let index = {
+            let mut fresh = self.fresh.borrow_mut();
+            let next = fresh.entry(letter).or_insert(0);
+            *next += 1;
+            *next
+        };
+        let mut db = self.db.clone();
+        db.ensure_metavariables(&BTreeMap::from([(letter, index)]))
+            .map_err(|e| TacticsError::MetavariableUnavailable(format!("{}", e)))?;
+        self.db.metavariable(letter, index).ok_or_else(|| {
+            TacticsError::MetavariableUnavailable(format!("&{}{} is not declared", letter, index))
+        })
+    }
+
+    /// The numbering of fresh work variables, to restore when a branch which used some fails.
+    pub fn fresh_mark(&self) -> BTreeMap<char, usize> {
+        self.fresh.borrow().clone()
+    }
+
+    pub fn fresh_reset(&self, mark: BTreeMap<char, usize>) {
+        *self.fresh.borrow_mut() = mark;
+    }
+
+    pub fn theorem(&self) -> Option<Label> {
+        self.theorem
+    }
+
     pub fn goal(&self) -> &Formula {
         &self.goal
     }
@@ -171,8 +274,9 @@ impl<'a> Context {
     pub fn get_theorem_formulas(&self, label: Label) -> Option<(Formula, Hypotheses)> {
         self.db.get_theorem_formulas(label)
     }
+    /// The statements which may be cited in the proof being built (those before the theorem).
     pub fn statements(&self, filter: impl Fn(bool, &[u8]) -> bool) -> impl Iterator<Item = (Label, Formula, Hypotheses)> + '_ {
-        self.db.statements(filter)
+        self.db.statements(self.theorem, filter)
     }
 //    pub fn debug_formula(&self, f: &Formula) -> String {
 //        self.db.debug_formula(f)

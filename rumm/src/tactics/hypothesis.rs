@@ -7,6 +7,7 @@ use crate::tactics::Tactics;
 use crate::tactics::TacticsError;
 use crate::tactics::TacticsResult;
 use core::fmt::Formatter;
+use metamath_rs::formula::Substitutions;
 
 /// A tactics which matches the goal with one of the hypothesis, or a zero-hypothesis theorem or axiom
 ///
@@ -50,6 +51,19 @@ impl Tactics for Hypothesis {
             if context.goal().eq(hyp) {
                 context.exit("Matched subgoal!");
                 return Ok(step.clone());
+            }
+        }
+        if context.stepwise() {
+            // A goal with work variables may become a hypothesis by binding them.
+            for (label, hyp) in context.hypotheses().iter() {
+                if let Ok(unified) = context.db.unify_terms(context.goal(), hyp, false) {
+                    let mut bindings = Substitutions::new();
+                    for (meta, term) in unified.meta.iter() {
+                        bindings.insert(*meta, context.db.formula_of(term)?);
+                    }
+                    context.exit("Matched hypothesis, binding work variables");
+                    return Ok(ProofStep::hyp_binding(*label, hyp.clone(), bindings));
+                }
             }
         }
         context.exit("Hypothesis failed");

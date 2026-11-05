@@ -25,7 +25,13 @@ load <filename>
 
 ## Metavariables
 
-For practical purposes, it's conveninent to make a distinction between formulas that contain metavariables and the ones that don't. Metavariables in Rumm conventionally start with `&` followed by an uppercase letter and a number. The [examples.mm](https://github.com/tirix/rumm/blob/master/rumm/examples/examples.mm) file defines `&W1`, `&W2` ... for well-formed formulas, `&C1`, `&C2`.. for classes and `&S1`, `&S2`.. for set variables. Technically, any variable can be used as metavariable, but for historical conventions (yamma, mmj2) and to avoid unexpected behaviour it's good practice to keep this notation.
+For practical purposes, it's convenient to make a distinction between formulas that contain metavariables and the ones that don't. A metavariable in Rumm is written `&` followed by an uppercase letter and a number: `&W1`, `&C12`, `&S3`.
+
+**No `.mm` file declares them.** The database loaded by a script is a plain one. Rumm loads it through a synthetic, in-memory root file which includes the database and then declares the metavariables as `$v` and `$f` (nothing is written to disk). Their `$f` labels start with `rumm.mv.`; a database already using that prefix is refused.
+
+- **The letter gives the typecode**, derived from the database the way MMX derives its work variables: the typecodes having a `$f`, in order of their first `$f`, each take the first letter of their name (uppercased, A-Z only) not already taken, else the first free letter. On set.mm this gives `&W` for `wff`, `&S` for `setvar` and `&C` for `class` (on a Peano-style database with `wff`, `term` and `var`, `&W`, `&T` and `&V`). The typecode is enforced: binding a class metavariable to a wff, for instance as the value of a `with` substitution, fails with a `WrongTypecode` tactic error. A letter that maps to no typecode is an unknown symbol.
+- **There is no limit** set by a declaration. Rumm scans the script for the highest index used for each letter, and declares that many, plus a reserve of 8 for fresh ones. The synthetic segment can be regenerated larger later in the same process (`Db::ensure_metavariables`), reparsing incrementally; the formulas built before stay valid.
+- **A metavariable never reaches a finished proof.** A proof which still contains one, in a step or in the substitution of a citation, is not complete: it is reported as `Failure: UnresolvedMetavariables("&C2")` naming them, and nothing is exported. A metavariable bound by a `match` or `find` is substituted before that, so the proof is fine. (This also covers the `$d` pairs holding a metavariable, which can only be checked once it is bound.)
 
 ## Tactics
 
@@ -44,7 +50,17 @@ This is the simplest possible tactics: it attempts to match the goal with one of
 
 ### **The `?` built-in tactics**
 
-This is only a dummy proof placeholder. It always fails, but allows to build a syntactically correct Rumm file where a tactics is needed. Its syntax is a single question mark sign, `?`.
+This is only a dummy proof placeholder. In a batch run it always fails, but allows to build a syntactically correct Rumm file where a tactics is needed. Its syntax is a single question mark sign, `?`.
+
+In a [stepwise request](#stepwise-requests) (`apply`, see `PROTOCOL.md`) it does not fail: the goal becomes an **open goal** of the returned proof state.
+
+---
+
+### **The `decide` built-in tactics**
+
+`{ decide ring-eval simp }` leaves the goal to *deciders*, which are named. The names are free text (identifiers, possibly none); rumm does not know what they mean. In a stepwise request the goal is returned as an open goal tagged with the names (`"deciders": ["ring-eval", "simp"]`), and the caller hands it to whoever decides. It is the stage one of deciders: rumm never calls one.
+
+In a batch run nothing returns a state, so a proof with an open goal is not complete: it is reported as `Failure: OpenGoals(...)` naming the deciders. Inside `try` or `find` the tactics succeeds (it always does), so a `try` which should move on past it needs to be ordered after the alternatives that really prove the goal.
 
 ---
 
@@ -143,6 +159,8 @@ This tactics finds in the loaded database a theorem matching the given formula t
 If a match with the given formula is found, the first tactics provided is used to find a proof for the theorem's hypotheses. Note that only one tactics is provided for all hypotheses.
 Then the second tactics is applied to prove the given formula itself.
 
+The formula is matched against each theorem's statement in either direction: the statement's variables may be bound to parts of the formula (the formula is an instance of the statement), or the formula's metavariables may be bound to parts of the statement. The first is tried first. The `finddf` tactics is the same, restricted to definitions (axioms labelled `df-...`).
+
 ---
 
 ### **The `findhyp` built-in tactics**
@@ -219,6 +237,24 @@ proof ~com23 {
 The metavariable  `&W3` holds the formula `( ps -> th )`, derived from the `match` tactics. The explicit substitution list given as parameter to the `use` tactics is then used to replace `ps` with `ch` in `&W3`, therefore deriving `( ch -> th )`, which is the sub-formula we need to prove [~com23](https://us.metamath.org/mpeuni/com23.html).
 
 ---
+
+## Stepwise requests
+
+Besides the batch run (`rumm file.rmm`), a caller who holds a *proof state* can ask rumm to apply one tactics to one of its open goals (`apply`, in `rumm serve`; the format is in `PROTOCOL.md`). The state is given in full and returned in full, rumm keeps nothing. Running the tactics is the same as in a batch run, with these differences, which apply to a stepwise request only:
+
+- **`?` and `decide` leave open goals.** The tactics which fail still fail their branch, so `try`, `match` and `find` branch as before. A leaf which is `?` or `{ decide ... }` is not a failure: the goal becomes an open goal in the new state.
+- **Partial progress.** A tactics which gets as far as `?` or `decide` leaves keeps what it did before. `tactics half () { apply ~syl ? ? }` applied to `( ph -> ch )` cites `syl` and returns the two open goals `( ph -> &W1 )` and `( &W1 -> ch )`. A tactics which fails anywhere else returns nothing: the state is unchanged.
+- **Work variables.** What `apply ~syl` leaves undetermined (the `ps` of the example) is a fresh work variable, never a variable of the cited statement, which would read as the theorem's own. The goal may hold work variables itself: `apply` and `!` bind them when the statement or the hypothesis fixes them (`( ph -> &W1 )` with `apply ~id` binds `&W1` to `ph`), and the binding is applied to every step and open goal of the returned state, and to the subgoals after the one which bound it. A tactics written in a library should not use the work variable names of the state in its own `match` patterns (`&W1` there is a pattern variable, not the state's).
+- **`find`, `finddf`, `findhyp` and `match` do not bind the work variables of the goal** (their metavariables are patterns, as in a batch run). Use `apply` and `!` to bind.
+- **Limits.** A goal closed by a hypothesis alone (`!` as the whole tactics) is not a step of its own: the steps which cited it cite the hypothesis. That is refused for the conclusion, which nothing cites. A `subgoal` does not pass the work variables bound in its first tactics to its second.
+
+## Depth limit
+
+Tactics may call each other recursively, and a script can make them cycle (`equality` calling `deduction` calling `equality`...). To end such a run with an error rather than a stack overflow, the nesting depth of tactics is limited. **The default limit is 100** (the stock `set.rmm` proofs nest about 20 deep), and the command line switch `--max-depth <N>` changes it. A tactics nested deeper than the limit fails, as any tactics would, with `DepthLimitExceeded`: `try` can move on to its next alternative, and otherwise the proof fails and the next proof of the script runs.
+
+## Failures
+
+A proof which cannot be built, or whose export panics (for instance because a work variable was left unbound), is reported as `Failure` for that proof; the following proofs still run. Errors in loading the database or the script are reported with their diagnostic and file, and rumm exits with status 1.
 
 ## Theorems
 

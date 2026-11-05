@@ -5,8 +5,11 @@ mod expression;
 mod parameter_definition;
 mod proof_definition;
 mod tactics_definition;
+mod terms;
 
 pub use database::Db;
+pub use terms::{compose_bindings, Term, Unified};
+pub use database::scan_metavariables;
 pub use database::Hypotheses;
 pub use display::Display;
 pub use display::DisplayPair;
@@ -19,5 +22,6 @@ pub use expression::SubstitutionListExpression;
 pub use parameter_definition::ParameterDefinition;
 pub use proof_definition::ProofDefinition;
 pub use proof_definition::ProofStep;
+pub use proof_definition::prove_theorem;
 pub use tactics_definition::TacticsDefinition;
 pub use tactics_definition::TacticsDict;

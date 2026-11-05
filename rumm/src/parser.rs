@@ -147,6 +147,10 @@ pub struct Parser<'a> {
     last_description: Option<String>,
     db: Db,
     debug: bool,
+    /// `load` directives are skipped (with a warning) instead of reloading the database.
+    ignore_load: bool,
+    /// What the parser noticed without failing, e.g. a skipped `load`.
+    pub warnings: Vec<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -156,13 +160,39 @@ impl<'a> Parser<'a> {
     // }
 
     pub fn from_str(filename: String, str: &'a str) -> Self {
+        let mut db = Db::default();
+        // The metavariables the script uses are declared when it loads its database.
+        let _ = db.require_metavariables(&scan_metavariables(str));
         Parser {
             filename,
             lexer: Token::lexer(str),
             last_description: None,
-            db: Db::default(),
+            db,
             debug: true,
+            ignore_load: false,
+            warnings: Vec::new(),
         }
+    }
+
+    /// A parser over a database which is already loaded (and stays so): the metavariables
+    /// the text uses are declared in it, and a `load` directive is skipped with a warning
+    /// when `ignore_load` is set.
+    pub fn with_db(filename: String, str: &'a str, mut db: Db, ignore_load: bool) -> Result<Self> {
+        db.require_metavariables(&scan_metavariables(str))?;
+        Ok(Parser {
+            filename,
+            lexer: Token::lexer(str),
+            last_description: None,
+            db,
+            debug: true,
+            ignore_load,
+            warnings: Vec::new(),
+        })
+    }
+
+    /// The database the parser works on.
+    pub fn db(&self) -> &Db {
+        &self.db
     }
 
     pub fn next_token(&mut self) -> Option<Token> {
@@ -238,6 +268,16 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// An identifier, or `None` at the closing curly bracket (which it consumes).
+    pub fn parse_optional_identifier(&mut self) -> Result<Option<String>> {
+        match self.next_token() {
+            Some(Token::Identifier(name)) => Ok(Some(name)),
+            Some(Token::CurlyBracketClose) => Ok(None),
+            Some(token) => Err(self.parse_error("An identifier or '}'", token)),
+            None => Err(self.unexpected_end_of_file("An identifier or '}'")),
+        }
+    }
+
     pub fn parse_optional_statement(&mut self) -> Result<Option<Label>> {
         match self.next_token() {
             Some(Token::CurlyBracketClose) => Ok(None),
@@ -301,6 +341,7 @@ impl<'a> Parser<'a> {
                     "find" => TacticsExpression::cst(Find::parse(self)?.into_arc()),
                     "finddf" => TacticsExpression::cst(FindDf::parse(self)?.into_arc()),
                     "findhyp" => TacticsExpression::cst(FindHyp::parse(self)?.into_arc()),
+                    "decide" => TacticsExpression::cst(Decide::parse(self)?.into_arc()),
                     _ => Err(Error::UnknownTacticsName(self.location(), name)),
                 },
                 Some(token) => Err(self.parse_error("A tactics name", token)),
@@ -421,6 +462,7 @@ impl<'a> Parser<'a> {
                     "find" => Expression::tactics(Find::parse(self)?.into_arc()),
                     "finddf" => Expression::tactics(FindDf::parse(self)?.into_arc()),
                     "findhyp" => Expression::tactics(FindHyp::parse(self)?.into_arc()),
+                    "decide" => Expression::tactics(Decide::parse(self)?.into_arc()),
                     _ => Err(Error::UnknownTacticsName(self.location(), name)),
                 },
                 Some(token) => Err(self.parse_error("A tactics name", token)),
@@ -444,7 +486,11 @@ impl<'a> Parser<'a> {
             match self.next_token() {
                 Some(Token::LoadKeyword) => {
                     let filename = self.parse_string_constant()?;
-                    self.db.parse(&filename)?; // TODO map_err to add the location of the error
+                    if self.ignore_load {
+                        self.warnings.push(format!("load \"{}\" ignored: the database of this process is in force", filename));
+                    } else {
+                        self.db.parse(&filename)?; // TODO map_err to add the location of the error
+                    }
                 }
                 // Some(Token::IncludeKeyword) => {
                 //     let filename = self.parse_string_constant()?;
@@ -474,11 +520,13 @@ impl<'a> Parser<'a> {
         let mut tactics_definitions = Vec::new();
         let mut proof_definitions = Vec::new();
         self.parse_commands(&mut tactics_definitions, &mut proof_definitions)?;
-        Ok(Script::new(
+        let mut script = Script::new(
             self.db.clone(),
             tactics_definitions,
             proof_definitions,
-        ))
+        );
+        script.warnings = self.warnings.clone();
+        Ok(script)
     }
 
     pub fn location(&self) -> Location {

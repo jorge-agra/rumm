@@ -1,0 +1,10 @@
+load "dv.mm"
+
+// `later` comes after `earlier`: it can't be cited, whichever tactics is used (the rehalfcl shape).
+proof ~earlier { apply ~later }
+proof ~earlier { find ! goal ! }
+proof ~earlier { try { apply ~later } { apply ~earlier } }
+
+// A theorem may cite the earlier ones.
+proof ~later { apply ~earlier }
+proof ~later { find ! goal ! }

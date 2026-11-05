@@ -37,8 +37,12 @@ impl Location {
 pub enum Error {
     #[error("I/O Error: {0}")]
     IoError(#[from] std::io::Error),
-    #[error("Metamath Error {} while parsing {0}", Error::format_mm_err(.1))]
+    #[error("Cannot read {0}: {1}")]
+    FileError(String, #[source] std::io::Error),
+    #[error("Metamath database error(s) while loading {0}:{}", Error::format_mm_err(.1))]
     DBError(String, Vec<(StatementAddress, Diagnostic)>),
+    #[error("Metavariables: {0}")]
+    MetavariableError(String),
     #[error("Metamath Parse Error ")]
     DBParseError { #[source] error: StmtParseError, location: Location },
     #[error("Lexer Error")]
@@ -64,6 +68,22 @@ impl Error {
         data.iter().fold(String::new(), |s, (saddr, diag)| format!("{}\n{:?}:{:?}", s, saddr, diag))
     }
 
+    /// The error as one text: where it happened, if it has a place in the source, then the
+    /// message of each cause.
+    pub fn describe(&self) -> String {
+        let mut text = String::new();
+        if let Some(location) = self.location() {
+            text.push_str(&format!("{}:{}: ", location.filename, location.line_number));
+        }
+        text.push_str(&self.to_string());
+        let mut cause = self.caused_by();
+        while let Some(error) = cause {
+            text.push_str(&format!(": {}", error));
+            cause = error.caused_by();
+        }
+        text
+    }
+
     pub fn caused_by(&self) -> Option<&Error> {
         match self {
             Error::TacticsParameterParseError(e, _) => Some(&*e),
@@ -72,25 +92,30 @@ impl Error {
         }
     }
 
-    fn location(&self) -> &Location {
+    /// The source location of the error, if it has one. Errors raised outside the Rumm
+    /// source (I/O, database diagnostics) carry their file in the message instead.
+    fn location(&self) -> Option<&Location> {
         match self {
-            Error::IoError(_) => todo!(),
-            Error::DBError(_, _) => todo!(),
-            Error::DBParseError { location, .. } => location,
-            Error::MMLexerError { location } => location,
+            Error::IoError(_) => None,
+            Error::FileError(_, _) => None,
+            Error::DBError(_, _) => None,
+            Error::MetavariableError(_) => None,
+            Error::DBParseError { location, .. } => Some(location),
+            Error::MMLexerError { location } => Some(location),
             Error::TacticsParameterParseError(e, _) => e.location(),
             Error::TacticsParseError(e, _) => e.location(),
-            Error::ParseError { location, .. } => location,
-            Error::UnexpectedEndOfFile { location, .. } => location,
-            Error::UnknownSymbol { location, .. } => location,
-            Error::UnknownLabel { location, .. } => location,
-            Error::UnknownTacticsName(location, _) => location,
+            Error::ParseError { location, .. } => Some(location),
+            Error::UnexpectedEndOfFile { location, .. } => Some(location),
+            Error::UnknownSymbol { location, .. } => Some(location),
+            Error::UnknownLabel { location, .. } => Some(location),
+            Error::UnknownTacticsName(location, _) => Some(location),
         }
     }
 
     fn add_slice<'a>(&self, slices: &mut Vec<Slice<'a>>, arena: &'a Arena<String>) {
-        let location = self.location();
-        slices.push(location.to_slice(format!("{}",self), arena));
+        if let Some(location) = self.location() {
+            slices.push(location.to_slice(format!("{}",self), arena));
+        }
         self.caused_by().and_then(|e| Some(e.add_slice(slices, arena)));
     }
 

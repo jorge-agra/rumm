@@ -1,0 +1,7 @@
+load "mini.mm"
+
+// ax-mp leaves `ph` unbound by its conclusion: building the proof panics.
+// That is a failure of this proof only.
+proof ~panics { apply ~ax-mp ! ! }
+
+proof ~dftru { apply ~df-tru }

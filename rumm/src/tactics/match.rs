@@ -75,12 +75,14 @@ impl Tactics for Match {
                     DisplayPair(&m2, &context.db)
                 ));
                 let mut sub_context = context.with_variables(&subst);
+                let mark = context.fresh_mark();
                 match m.1.execute(&mut sub_context) {
                     Ok(step) => {
                         context.exit("Match successful");
                         return Ok(step);
                     },
                     Err(e) => {
+                        context.fresh_reset(mark);
                         context.message(format!("{:?}", e).as_str());
                     },
                 }
