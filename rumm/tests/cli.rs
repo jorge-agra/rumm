@@ -1,7 +1,7 @@
 //! End-to-end tests: run the `rumm` binary on the scripts of `tests/fixtures/`.
 //!
-//! None of them needs set.mm. `stock_proofs_on_setmm` does, and runs only when the
-//! environment variable `RUMM_SETMM` holds the path to a set.mm.
+//! None of them needs set.mm, except `stock_proofs_on_setmm` and `sample_proofs_on_setmm`, which run
+//! only when the environment variable `RUMM_SETMM` holds the path to a set.mm.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -109,18 +109,87 @@ fn panic_while_building_a_proof_fails_that_proof_only() {
     assert!(out.contains("df-tru"), "the later proof is exported");
 }
 
-/// Stock proofs of `set.rmm` on the real set.mm, gated on `RUMM_SETMM`.
+/// The section of the output for the `n`th proof of a run (1-based): from its
+/// `Proof for "<name>":` line to the next one.
+fn section(out: &str, n: usize) -> &str {
+    let starts: Vec<usize> = out.match_indices("Proof for \"").map(|(i, _)| i).collect();
+    let end = starts.get(n).copied().unwrap_or(out.len());
+    &out[starts[n - 1]..end]
+}
+
+fn succeeded(section: &str) -> bool {
+    section.lines().any(|l| l == "Success")
+}
+
 #[test]
-fn stock_proofs_on_setmm() {
+fn distinct_variables_are_checked_during_the_search() {
+    let output = rumm(&fixtures(), &["dv.rmm"]);
+    let out = stdout(&output);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let results = outcomes(&out);
+    assert_eq!(results.len(), 6, "{}", out);
+
+    // 1. The theorem declares `$d x ph`: the citation of `ax-5` is fine, and the export has the `$d`.
+    assert_eq!(results[0], "Success");
+    assert!(section(&out, 1).lines().any(|l| l == "$d ph x"), "{}", section(&out, 1));
+    assert!(section(&out, 1).contains(":ax-5 "));
+
+    // 2. No `$d` declared: `ax-5` fails as a tactic, `try` reaches the second branch.
+    assert_eq!(results[1], "Success");
+    let second = section(&out, 2);
+    assert!(second.contains("Apply violates $d"), "{}", second);
+    assert!(second.contains(":ax-5alt "), "{}", second);
+    assert!(!second.contains(":ax-5 "), "{}", second);
+    assert!(!second.lines().any(|l| l.starts_with("$d")), "no $d needed: {}", second);
+
+    // 3. Without an alternative the proof fails, naming the constraint.
+    assert!(results[2].starts_with("Failure: DistinctVariable"), "{:?}", results);
+    assert!(results[2].contains("doesn't declare $d x ph"), "{:?}", results);
+
+    // 4. `ph := x = y` contains `x`, which `$d x ph` forbids even though the theorem declares `$d x y`.
+    assert_eq!(results[3], "Success");
+    assert!(section(&out, 4).contains(":ax-5alt "));
+    assert!(results[4].starts_with("Failure: DistinctVariable"), "{:?}", results);
+    assert!(results[4].contains("both contain x"), "{:?}", results);
+
+    // 5. `find` goes past the statement which violates its `$d`.
+    assert_eq!(results[5], "Success");
+    let found = section(&out, 6);
+    assert!(found.contains("Found match with ax-5alt"), "{}", found);
+    assert!(!found.contains(":ax-5 "), "{}", found);
+}
+
+#[test]
+fn statements_from_the_goal_on_cannot_be_cited() {
+    let output = rumm(&fixtures(), &["order.rmm"]);
+    let out = stdout(&output);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let results = outcomes(&out);
+    assert_eq!(results.len(), 5, "{}", out);
+    // `later` follows `earlier` and has the same statement (the shape of rehalfcl / rehalfcld).
+    assert_eq!(results[0], "Failure: CitedAfterGoal(\"later\")", "{:?}", results);
+    assert!(results[1].starts_with("Failure"), "find doesn't see `later` or the goal: {:?}", results);
+    assert!(!section(&out, 2).contains("Found match with later"));
+    // A theorem can't cite itself either.
+    assert!(results[2].starts_with("Failure"), "{:?}", results);
+    // The later theorem can cite the earlier one, with `apply` and with `find`.
+    assert_eq!(results[3], "Success");
+    assert_eq!(results[4], "Success");
+    assert!(section(&out, 5).contains("Found match with earlier"));
+}
+
+/// Runs `script` (a rumm script loading "examples/examples.mm", as `set.rmm` does) on the real
+/// set.mm, in a scratch directory. `None` (after saying so) when `RUMM_SETMM` is not set.
+fn run_on_setmm(script: &str) -> Option<String> {
     let setmm = match std::env::var("RUMM_SETMM") {
         Ok(path) => path,
         Err(_) => {
             println!("skipped: RUMM_SETMM not set");
-            return;
+            return None;
         }
     };
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let dir = std::env::temp_dir().join(format!("rumm-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("rumm-test-{}-{}", std::process::id(), script.len()));
     fs::create_dir_all(dir.join("examples")).unwrap();
     let examples = fs::read_to_string(root.join("rumm/examples/examples.mm")).unwrap();
     let examples = examples
@@ -129,20 +198,66 @@ fn stock_proofs_on_setmm() {
         .collect::<Vec<_>>()
         .join("\n");
     fs::write(dir.join("examples/examples.mm"), examples).unwrap();
-    fs::copy(root.join("set.rmm"), dir.join("set.rmm")).unwrap();
+    fs::write(dir.join("script.rmm"), script).unwrap();
 
-    let output = rumm(&dir, &["set.rmm"]);
+    let output = rumm(&dir, &["script.rmm"]);
     let out = stdout(&output);
     let _ = fs::remove_dir_all(&dir);
     assert!(output.status.success(), "{}", stderr(&output));
-    // Which of the stock proofs succeeded: the text after `Proof for "<name>":` up to the next one.
-    let succeeded = |name: &str| {
-        let header = format!("Proof for \"{}\":", name);
-        let section = out.split(&header).nth(1).expect("proof not run");
-        let section = section.split("Proof for \"").next().unwrap();
-        section.lines().any(|l| l == "Success")
+    Some(out)
+}
+
+/// The library of `set.rmm`: everything before its first `proof`.
+fn set_rmm_library() -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let rmm = fs::read_to_string(root.join("set.rmm")).unwrap();
+    let library: Vec<&str> = rmm.lines().take_while(|l| !l.starts_with("proof ")).collect();
+    library.join("\n")
+}
+
+/// The section of the output for the proof of `name`.
+fn section_of<'a>(out: &'a str, name: &str) -> &'a str {
+    let header = format!("Proof for \"{}\":", name);
+    let section = out.split(&header).nth(1).unwrap_or_else(|| panic!("{} was not run", name));
+    section.split("Proof for \"").next().unwrap()
+}
+
+/// Stock proofs of `set.rmm` on the real set.mm, gated on `RUMM_SETMM`.
+#[test]
+fn stock_proofs_on_setmm() {
+    let script = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("set.rmm")).unwrap();
+    let out = match run_on_setmm(&script) {
+        Some(out) => out,
+        None => return,
     };
-    for name in &["rummex1", "ellimc", "ajfval", "ismidb", "inftmrel"] {
-        assert!(succeeded(name), "{} failed", name);
+    for name in &["rummex1", "ellimc", "ajfval", "ismidb"] {
+        assert!(succeeded(section_of(&out, name)), "{} failed", name);
     }
+    // The proofs which need `$d` export them.
+    assert!(section_of(&out, "ellimc").lines().any(|l| l == "$d y z"));
+    assert!(section_of(&out, "ajfval").lines().any(|l| l == "$d x y"));
+    // `inftmrel` used to be reported as a success, though it violates a `$d`.
+    let inftmrel = section_of(&out, "inftmrel");
+    assert!(!succeeded(inftmrel), "inftmrel must not succeed");
+    assert!(inftmrel.contains("DistinctVariable"), "it fails because of a $d");
+}
+
+/// The proofs of the 0526 sample (`reals`, `definition`...), gated on `RUMM_SETMM`. Their
+/// `rehalfcl` and `absval` are the shapes which used to go wrong: citing `rehalfcld`, which depends
+/// on `rehalfcl`, and `$d`.
+#[test]
+fn sample_proofs_on_setmm() {
+    let sample = fs::read_to_string(fixtures().join("sample_0526.rmm")).unwrap();
+    let out = match run_on_setmm(&format!("{}\n{}", set_rmm_library(), sample)) {
+        Some(out) => out,
+        None => return,
+    };
+    for name in &["rehalfcl", "absval", "reval", "fzval"] {
+        let section = section_of(&out, name);
+        assert!(succeeded(section), "{} failed: {}", name, section);
+    }
+    assert!(section_of(&out, "absval").lines().any(|l| l == "$d A x"));
+    assert!(section_of(&out, "fzval").lines().any(|l| l == "$d k m"));
+    // The proof of `rehalfcl` doesn't cite `rehalfcld`, or anything after it.
+    assert!(!section_of(&out, "rehalfcl").contains(":rehalfcld "));
 }

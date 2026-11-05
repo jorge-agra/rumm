@@ -40,6 +40,10 @@ pub enum TacticsError {
     /// The nesting of tactics exceeded the depth limit (see `Context::max_depth`).
     DepthLimitExceeded(usize),
     NoMatchFound,
+    /// The citation would violate a `$d` constraint of the cited statement.
+    DistinctVariable(String),
+    /// The cited statement is the theorem being proved, or comes after it in the database.
+    CitedAfterGoal(String),
     WrongParameterCount(usize, usize),
     WrongHypCount(usize, usize),
     WrongTypecode(TypeCode, TypeCode, Label),

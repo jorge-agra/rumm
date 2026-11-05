@@ -13,6 +13,7 @@ use crate::tactics::Tactics;
 use crate::tactics::TacticsError;
 use crate::tactics::TacticsResult;
 use core::fmt::Formatter;
+use std::collections::BTreeSet;
 
 /// Generic trait for finding a theorem among all database statements to prove the goal.
 trait FilterFind {
@@ -44,6 +45,8 @@ impl dyn FilterFind {
         for (label, formula, hyps) in context.clone().statements(|is_axiom, label| self.filter(is_axiom, label)) {
             if let Ok(step) = self.check_match(context, &target, &formula, &tactics2,|subst| {
                 context.message(&format!("Found match with {}", DisplayPair(&label, &context.db)));
+                // A citation violating a `$d` fails now, so that the next statement is tried.
+                context.db.check_distinct(context.theorem(), label, subst, context.variables(), &mut BTreeSet::new())?;
                 // context.message(&format!("  subst:{}", DisplayPair(subst, &context.db)));
                 let mut substeps = vec![];
                 let mut failed = false;
@@ -62,6 +65,7 @@ impl dyn FilterFind {
                 context.message(&format!("  subgoal = {}", DisplayPair(&subgoal, &context.db)));
                 let mut subgoal_subst = Substitutions::new();
                 subgoal.unify(&formula, &mut subgoal_subst)?;
+                context.db.check_distinct(context.theorem(), label, &subgoal_subst, context.variables(), &mut BTreeSet::new())?;
                 Ok(ProofStep::apply(
                     label,
                     substeps.into_boxed_slice(),

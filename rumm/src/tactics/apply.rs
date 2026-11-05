@@ -12,6 +12,7 @@ use crate::tactics::Tactics;
 use crate::tactics::TacticsError;
 use crate::tactics::TacticsResult;
 use core::fmt::Formatter;
+use std::collections::BTreeSet;
 
 
 /// A tactics which applies a given theorem to prove the goal.
@@ -78,6 +79,10 @@ impl Tactics for Apply {
 
         let theorem = self.theorem.evaluate(context)?;
         context.message(&format!(" Attempting apply {}", DisplayPair(&theorem, &context.db)));
+        if !context.db.precedes(theorem, context.theorem()) {
+            context.exit("Apply statement is not before the theorem");
+            return Err(TacticsError::CitedAfterGoal(context.db.label_name(theorem)));
+        }
         if let Some((theorem_formula, hyps)) = context.get_theorem_formulas(theorem) {
             let mut subst = Substitutions::new();
             if let Err(e) = context.goal().unify(&theorem_formula, &mut subst) {
@@ -85,6 +90,10 @@ impl Tactics for Apply {
                 return Err(e.into());
             }
             subst.extend(&my_subst);
+            if let Err(e) = context.db.check_distinct(context.theorem(), theorem, &subst, context.variables(), &mut BTreeSet::new()) {
+                context.exit(&format!("Apply violates $d: {:?}", e));
+                return Err(e);
+            }
             // context.message(&format!("  subst:{}", DisplayPair(&subst, &context.db)));
             if hyps.len() == self.subtactics.len() {
                 let mut substeps = vec![];

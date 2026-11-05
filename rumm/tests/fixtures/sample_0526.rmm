@@ -1,0 +1,25 @@
+// The tactics and proofs of the 0526 sample, appended to the library of `set.rmm`
+// (every line before its first `proof`). They need set.mm: see `sample_proofs_on_setmm`.
+
+tactics nonzero ()
+{ try { use deduction } { apply ~a1i { apply ~2ne0 } } { apply ~a1i { apply ~ax-1ne0 } } }
+
+tactics reals ()
+{ try { use deduction } { apply ~a1i { apply ~1re } } { apply ~a1i { apply ~2re } }
+  { match goal $ ( &W1 -> &C1 e. RR ) $ { match $ &C1 $
+    $ -u &C2 $ { apply ~renegcld { use reals } }
+    $ ( &C2 + &C3 ) $ { apply ~readdcld { use reals } { use reals } }
+    $ ( &C2 - &C3 ) $ { apply ~resubcld { use reals } { use reals } }
+    $ ( &C2 x. &C3 ) $ { apply ~remulcld { use reals } { use reals } }
+    $ ( &C2 / &C3 ) $ { apply ~redivcld { use reals } { use reals } { use nonzero } } } } }
+
+tactics setex () { try { apply ~zex } { apply ~cnex } { apply ~reex } }
+
+tactics existence2 ()
+{ try { use existence } { match goal $ ( &W1 -> { &S1 e. &C1 | &W2 } e. _V ) $
+  { apply ~a1i { apply ~rabex { use setex } with ~cV $ _V $ } } } }
+
+proof ~rehalfcl { use reals }
+proof ~absval { use definition { use deduction } { use existence } }
+proof ~reval { use definition { use deduction } { use existence } }
+proof ~fzval { use definition { use deduction } { use deduction } { use existence2 } }

@@ -6,6 +6,7 @@ use crate::lang::{Db, Display};
 use crate::parser::{Parse, Parser};
 use crate::tactics::TacticsError;
 use core::fmt::Formatter;
+use std::collections::BTreeSet;
 use metamath_rs::formula::Substitutions;
 use metamath_rs::proof::ProofTreeArray;
 use metamath_rs::Formula;
@@ -85,6 +86,31 @@ impl ProofStep {
     	}
     }
 
+    /// Checks the `$d` constraints of every citation of the proof against the frame of
+    /// `theorem`, which the substitutions of the finished proof allow to settle, and returns
+    /// the `$d` the proof needs, as pairs of variable names.
+    pub fn distinct_variables(&self, db: &Db, theorem: Option<Label>) -> std::result::Result<BTreeSet<(String, String)>, TacticsError> {
+        let mut needed = BTreeSet::new();
+        self.collect_distinct_variables(db, theorem, &Substitutions::new(), &mut needed)?;
+        Ok(needed)
+    }
+
+    fn collect_distinct_variables(
+        &self,
+        db: &Db,
+        theorem: Option<Label>,
+        bindings: &Substitutions,
+        needed: &mut BTreeSet<(String, String)>,
+    ) -> std::result::Result<(), TacticsError> {
+        if let ProofStep::Apply { apply, apply_on, substitutions, .. } = self {
+            db.check_distinct(theorem, *apply, substitutions, bindings, needed)?;
+            for step in apply_on.iter() {
+                step.collect_distinct_variables(db, theorem, bindings, needed)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn as_proof_tree_array(&self, db: Db) -> ProofTreeArray {
         let mut arr = ProofTreeArray::default();
         let mut stack_buffer = vec![];
@@ -122,7 +148,7 @@ impl ProofDefinition {
             println!("====================================================\n\n");
             println!("Proof for {:?}:", self.theorem.to_string(&db));
             let mut context =
-                Context::new(db.clone(), theorem_formula, essential_hypotheses, tactics_definitions, max_depth);
+                Context::new(db.clone(), theorem_formula, Some(self.theorem), essential_hypotheses, tactics_definitions, max_depth);
             self.tactics.execute(&mut context)
         } else {
             println!("Unknown theorem {:?}!", self.theorem);

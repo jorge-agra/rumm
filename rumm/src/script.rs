@@ -60,11 +60,17 @@ impl Script {
             let outcome = catch_unwind(AssertUnwindSafe(|| {
                 proof_def
                     .prove(self.db.clone(), self.tactics_definitions.clone(), self.max_depth)
-                    .map(|step| {
+                    .and_then(|step| {
+                        // The citations are checked again on the finished proof, whose
+                        // substitutions are settled; this also gives the `$d` it needs.
+                        let distinct = step.distinct_variables(&self.db, Some(proof_def.theorem()))?;
+                        Ok((step, distinct))
+                    })
+                    .map(|(step, distinct)| {
                         let mut arr = step.as_proof_tree_array(self.db.clone());
                         arr.calc_indent();
                         let mut mmp = Vec::new();
-                        self.db.export_mmp(proof_def.theorem(), &arr, &mut mmp);
+                        self.db.export_mmp(proof_def.theorem(), &distinct, &arr, &mut mmp);
                         String::from_utf8_lossy(&mmp).into_owned()
                     })
             }));

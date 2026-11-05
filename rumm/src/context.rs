@@ -21,6 +21,9 @@ pub const DEFAULT_MAX_DEPTH: usize = 100;
 pub struct Context {
     pub(crate) db: Db,
     goal: Formula,
+    /// The theorem being proved, which gives the database position and the `$d` of the goal.
+    /// `None` for a goal which is not a database theorem.
+    theorem: Option<Label>,
     hypotheses: Hypotheses,
     subgoals: Vec<(Formula, ProofStep)>,
     tactics_definitions: TacticsDict,
@@ -43,6 +46,7 @@ impl<'a> Context {
     pub fn new(
         db: Db,
         goal: Formula,
+        theorem: Option<Label>,
         hypotheses: Hypotheses,
         tactics_definitions: TacticsDict,
         max_depth: usize,
@@ -51,6 +55,7 @@ impl<'a> Context {
         Context {
             db,
             goal,
+            theorem,
             hypotheses,
             subgoals,
             tactics_definitions,
@@ -96,6 +101,7 @@ impl<'a> Context {
         Self {
             db: self.db.clone(),
             goal,
+            theorem: self.theorem,
             hypotheses: self.hypotheses.clone(),
             subgoals: self.subgoals.clone(),
             tactics_definitions: self.tactics_definitions.clone(),
@@ -115,6 +121,7 @@ impl<'a> Context {
         Self {
             db: self.db.clone(),
             goal: self.goal.clone(),
+            theorem: self.theorem,
             hypotheses: self.hypotheses.clone(),
             subgoals: self.subgoals.clone(),
             tactics_definitions: self.tactics_definitions.clone(),
@@ -132,6 +139,7 @@ impl<'a> Context {
         Self {
             db: self.db.clone(),
             goal: self.goal.clone(),
+            theorem: self.theorem,
             hypotheses: self.hypotheses.clone(),
             subgoals: self.subgoals.clone(),
             tactics_definitions: self.tactics_definitions.clone(),
@@ -178,6 +186,10 @@ impl<'a> Context {
         f.get_by_path(&[])
     }
 
+    pub fn theorem(&self) -> Option<Label> {
+        self.theorem
+    }
+
     pub fn goal(&self) -> &Formula {
         &self.goal
     }
@@ -193,8 +205,9 @@ impl<'a> Context {
     pub fn get_theorem_formulas(&self, label: Label) -> Option<(Formula, Hypotheses)> {
         self.db.get_theorem_formulas(label)
     }
+    /// The statements which may be cited in the proof being built (those before the theorem).
     pub fn statements(&self, filter: impl Fn(bool, &[u8]) -> bool) -> impl Iterator<Item = (Label, Formula, Hypotheses)> + '_ {
-        self.db.statements(filter)
+        self.db.statements(self.theorem, filter)
     }
 //    pub fn debug_formula(&self, f: &Formula) -> String {
 //        self.db.debug_formula(f)
