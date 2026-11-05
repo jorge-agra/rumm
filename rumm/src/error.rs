@@ -41,6 +41,8 @@ pub enum Error {
     FileError(String, #[source] std::io::Error),
     #[error("Metamath database error(s) while loading {0}:{}", Error::format_mm_err(.1))]
     DBError(String, Vec<(StatementAddress, Diagnostic)>),
+    #[error("Metavariables: {0}")]
+    MetavariableError(String),
     #[error("Metamath Parse Error ")]
     DBParseError { #[source] error: StmtParseError, location: Location },
     #[error("Lexer Error")]
@@ -81,6 +83,7 @@ impl Error {
             Error::IoError(_) => None,
             Error::FileError(_, _) => None,
             Error::DBError(_, _) => None,
+            Error::MetavariableError(_) => None,
             Error::DBParseError { location, .. } => Some(location),
             Error::MMLexerError { location } => Some(location),
             Error::TacticsParameterParseError(e, _) => e.location(),

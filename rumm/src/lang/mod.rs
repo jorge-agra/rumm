@@ -7,6 +7,7 @@ mod proof_definition;
 mod tactics_definition;
 
 pub use database::Db;
+pub use database::scan_metavariables;
 pub use database::Hypotheses;
 pub use display::Display;
 pub use display::DisplayPair;

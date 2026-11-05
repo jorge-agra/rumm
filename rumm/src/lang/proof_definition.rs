@@ -86,6 +86,26 @@ impl ProofStep {
     	}
     }
 
+    /// The metavariables left in the finished proof, in its conclusions and in the
+    /// substitutions of its citations. A proof which has some is not complete.
+    pub fn unresolved_metavariables(&self, db: &Db) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        self.collect_metavariables(db, &mut found);
+        found
+    }
+
+    fn collect_metavariables(&self, db: &Db, found: &mut BTreeSet<String>) {
+        db.metavariables_in(self.result(), found);
+        if let ProofStep::Apply { apply_on, substitutions, .. } = self {
+            for (_, formula) in substitutions.iter() {
+                db.metavariables_in(formula, found);
+            }
+            for step in apply_on.iter() {
+                step.collect_metavariables(db, found);
+            }
+        }
+    }
+
     /// Checks the `$d` constraints of every citation of the proof against the frame of
     /// `theorem`, which the substitutions of the finished proof allow to settle, and returns
     /// the `$d` the proof needs, as pairs of variable names.

@@ -18,7 +18,7 @@ use metamath_rs::Label;
 use metamath_rs::StatementType;
 use metamath_rs::Symbol;
 use metamath_rs::scopeck::{FrameRef, Hyp};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
 use std::ops::Deref;
 use std::io::Write;
@@ -27,9 +27,53 @@ use std::sync::Arc;
 /// A type for representing theorem essential hypotheses: a label and the corresponding formula.
 pub type Hypotheses = Box<[(Label, Formula)]>;
 
+/// The prefix of the labels of the `$f` hypotheses which type the metavariables. The labels
+/// are not valid in a script, and a database which already uses the prefix is refused, so a
+/// metavariable can't be mistaken for a statement of the database.
+pub const METAVARIABLE_LABEL_PREFIX: &str = "rumm.mv.";
+
+/// The name of the synthetic in-memory file which includes the database and declares the
+/// metavariables. Nothing is written to disk.
+const ROOT_FILE: &str = "rumm:root";
+
+/// How many metavariables of each letter are declared beyond the ones the scripts use,
+/// for the tactics which need fresh ones.
+pub const METAVARIABLE_RESERVE: usize = 8;
+
+/// The metavariables of a database: `&<letter><n>`, whose letter gives the typecode.
+#[derive(Default)]
+struct Metavariables {
+    /// The database file the synthetic root includes.
+    file: String,
+    /// The typecode of each letter, see `Db::letter_typecodes`.
+    letters: BTreeMap<char, String>,
+    /// How many metavariables of each letter the synthetic segment declares.
+    declared: BTreeMap<char, usize>,
+    /// The highest index the scripts use, by letter.
+    required: BTreeMap<char, usize>,
+}
+
+/// The highest index of each metavariable letter (`&W3`, `&C12`...) used in a text.
+pub fn scan_metavariables(text: &str) -> BTreeMap<char, usize> {
+    let mut used = BTreeMap::new();
+    for token in text.split_whitespace() {
+        let mut chars = token.chars();
+        if chars.next() != Some('&') { continue; }
+        let Some(letter) = chars.next().filter(char::is_ascii_uppercase) else { continue };
+        let digits = chars.as_str();
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) { continue; }
+        if let Ok(index) = digits.parse::<usize>() {
+            let highest = used.entry(letter).or_insert(0);
+            *highest = (*highest).max(index);
+        }
+    }
+    used
+}
+
 #[derive(Clone)]
 pub struct Db {
     intern: Arc<RefCell<Database>>,
+    metavariables: Arc<RefCell<Metavariables>>,
 }
 
 impl Default for Db {
@@ -41,22 +85,164 @@ impl Default for Db {
         };
         Db {
             intern: Arc::new(RefCell::new(Database::new(options))),
+            metavariables: Arc::new(RefCell::new(Metavariables::default())),
         }
     }
 }
 
 impl Db {
+    /// Loads the plain database `filename`, and declares the metavariables of the scripts.
+    ///
+    /// The database is loaded through a synthetic in-memory root file which includes it, then
+    /// declares the metavariables as `$v` and `$f`, so that no `.mm` file has to. The root is
+    /// first parsed with the include alone to learn the typecodes, then with the declarations;
+    /// the second parse reuses the file already read.
     pub fn parse(&mut self, filename: &str) -> Result {
-        let mut database = self.intern.borrow_mut();
-
         print!("Loading \"{}\" ... ", filename);
-        database.parse(filename.to_string(), Vec::new());
-        let err = database.diag_notations();
-        if !err.is_empty() {
-            return Err(Error::DBError(filename.to_string(), err).into());
+        {
+            let mut meta = self.metavariables.borrow_mut();
+            meta.file = filename.to_string();
+            meta.declared.clear();
+            meta.letters.clear();
         }
+        if filename.contains(char::is_whitespace) || filename.contains('$') {
+            return Err(Error::MetavariableError(format!("cannot include \"{}\": the path has spaces or `$`", filename)));
+        }
+        {
+            let mut database = self.intern.borrow_mut();
+            database.parse(ROOT_FILE.to_string(), vec![(ROOT_FILE.to_string(), Self::root_text(filename, &BTreeMap::new()))]);
+            let (letters, collision) = Self::letter_typecodes(&database);
+            if let Some(label) = collision {
+                return Err(Error::MetavariableError(format!(
+                    "the database uses the label \"{}\", whose prefix \"{}\" is reserved for metavariables", label, METAVARIABLE_LABEL_PREFIX)));
+            }
+            self.metavariables.borrow_mut().letters = letters;
+        }
+        self.declare_metavariables(false)?;
+        self.check_diagnostics(filename)?;
         println!("{}", "ok".green());
+        self.run_passes(filename)
+    }
 
+    /// Makes sure at least the given highest index of each letter (`'W' => 9` for `&W1`..`&W9`)
+    /// can be used, with a reserve of fresh metavariables beyond it. When more must be declared,
+    /// the synthetic segment is regenerated larger and the database reparsed incrementally.
+    /// Formulas built before remain valid. Letters without a typecode are ignored.
+    pub fn ensure_metavariables(&mut self, needs: &BTreeMap<char, usize>) -> Result {
+        let grow = {
+            let mut meta = self.metavariables.borrow_mut();
+            let mut grow = false;
+            for (&letter, &index) in needs {
+                if !meta.letters.contains_key(&letter) { continue; }
+                let required = meta.required.entry(letter).or_insert(0);
+                *required = (*required).max(index);
+                grow |= index > meta.declared.get(&letter).copied().unwrap_or(0);
+            }
+            grow
+        };
+        if !grow {
+            return Ok(());
+        }
+        let file = self.metavariables.borrow().file.clone();
+        self.declare_metavariables(true)?;
+        self.check_diagnostics(&file)?;
+        self.run_passes(&file)
+    }
+
+    /// Records the metavariables the scripts use (see `scan_metavariables`) for the next `parse`,
+    /// or declares them at once if a database is loaded.
+    pub fn require_metavariables(&mut self, needs: &BTreeMap<char, usize>) -> Result {
+        let loaded = !self.metavariables.borrow().file.is_empty();
+        if loaded {
+            return self.ensure_metavariables(needs);
+        }
+        let mut meta = self.metavariables.borrow_mut();
+        for (&letter, &index) in needs {
+            let required = meta.required.entry(letter).or_insert(0);
+            *required = (*required).max(index);
+        }
+        Ok(())
+    }
+
+    /// The typecode of each metavariable letter, in the way MMX derives its work variable tags:
+    /// the typecodes with a `$f` in order of first `$f`, each taking the first letter of its
+    /// uppercased name (A-Z only) not yet taken, else the first free letter (a typecode with no
+    /// letter left has no metavariables). Also returns a label of the database which uses the
+    /// reserved metavariable prefix, if any.
+    fn letter_typecodes(database: &Database) -> (BTreeMap<char, String>, Option<String>) {
+        let mut order: Vec<String> = vec![];
+        let mut collision = None;
+        for sref in database.statements() {
+            if sref.statement_type() == StatementType::Floating {
+                let typecode = as_str(sref.math_at(0).slice).to_string();
+                if !order.contains(&typecode) {
+                    order.push(typecode);
+                }
+            }
+            if collision.is_none() && sref.label().starts_with(METAVARIABLE_LABEL_PREFIX.as_bytes()) {
+                collision = Some(as_str(sref.label()).to_string());
+            }
+        }
+        let mut letters: BTreeMap<char, String> = BTreeMap::new();
+        for typecode in order {
+            let own = typecode.to_uppercase().chars().filter(char::is_ascii_uppercase).find(|c| !letters.contains_key(c));
+            if let Some(letter) = own.or_else(|| ('A'..='Z').find(|c| !letters.contains_key(c))) {
+                letters.insert(letter, typecode);
+            }
+        }
+        (letters, collision)
+    }
+
+    /// The text of the synthetic root: the include of the database and the declarations of
+    /// `counts[letter]` metavariables of each letter.
+    fn root_text(file: &str, declarations: &BTreeMap<char, (String, usize)>) -> Vec<u8> {
+        let mut text = format!("$[ {} $]\n", file);
+        for (letter, (_, count)) in declarations {
+            for chunk in (1..=*count).collect::<Vec<_>>().chunks(20) {
+                let names: Vec<String> = chunk.iter().map(|i| format!("&{}{}", letter, i)).collect();
+                text.push_str(&format!("$v {} $.\n", names.join(" ")));
+            }
+        }
+        for (letter, (typecode, count)) in declarations {
+            for i in 1..=*count {
+                text.push_str(&format!("{}{}{} $f {} &{}{} $.\n", METAVARIABLE_LABEL_PREFIX, letter, i, typecode, letter, i));
+            }
+        }
+        text.into_bytes()
+    }
+
+    /// Parses the synthetic root with the declarations the scripts require (`growing`: at least
+    /// what is declared already).
+    fn declare_metavariables(&mut self, growing: bool) -> Result {
+        let (file, declarations) = {
+            let mut meta = self.metavariables.borrow_mut();
+            let mut declarations = BTreeMap::new();
+            for (&letter, typecode) in &meta.letters {
+                let required = meta.required.get(&letter).copied().unwrap_or(0);
+                let declared = meta.declared.get(&letter).copied().unwrap_or(0);
+                let count = if growing && required <= declared { declared } else { required + METAVARIABLE_RESERVE };
+                declarations.insert(letter, (typecode.clone(), count));
+            }
+            for (&letter, (_, count)) in &declarations {
+                meta.declared.insert(letter, *count);
+            }
+            (meta.file.clone(), declarations)
+        };
+        let mut database = self.intern.borrow_mut();
+        database.parse(ROOT_FILE.to_string(), vec![(ROOT_FILE.to_string(), Self::root_text(&file, &declarations))]);
+        Ok(())
+    }
+
+    fn check_diagnostics(&self, filename: &str) -> Result {
+        let err = self.intern.borrow().diag_notations();
+        if !err.is_empty() {
+            return Err(Error::DBError(filename.to_string(), err));
+        }
+        Ok(())
+    }
+
+    fn run_passes(&self, filename: &str) -> Result {
+        let mut database = self.intern.borrow_mut();
         print!("Building \"{}\" grammar... ", filename);
         database.grammar_pass();
         let gerr = database.diag_notations();
@@ -72,10 +258,24 @@ impl Db {
             return Err(Error::DBError(filename.to_string(), gerr).into());
         }
         println!("{}", "ok".green());
-        //let testx = self.get_theorem_label("testx".to_string()).unwrap();
-        //let (_f, ..) = self.get_theorem_formulas(testx).unwrap();
-        //println!("TESTX {}", f.debug(self.database.borrow_mut().name_result()));
         Ok(())
+    }
+
+    /// The typecode of each metavariable letter of the loaded database.
+    pub fn metavariable_letters(&self) -> BTreeMap<char, String> {
+        self.metavariables.borrow().letters.clone()
+    }
+
+    /// The names of the metavariables (`&W1`...) in a formula.
+    pub fn metavariables_in(&self, formula: &Formula, into: &mut BTreeSet<String>) {
+        let database = self.intern.borrow();
+        for (label, is_variable) in formula.labels_iter() {
+            if is_variable {
+                if let Some(name) = Self::variable_name(&database, label).filter(|n| n.starts_with('&')) {
+                    into.insert(name);
+                }
+            }
+        }
     }
 
     pub fn get_symbol(&self, name: String) -> Option<Symbol> {
@@ -383,6 +583,7 @@ impl Display for Box<Substitutions> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lang::DisplayPair;
 
     fn dv_db() -> Db {
         let mut db = Db::default();
@@ -435,7 +636,7 @@ mod tests {
 
         // Unbound variables, and metavariables, are deferred.
         let mut deferred = Substitutions::new();
-        deferred.insert(label(&db, "wph"), var("ww1", wff));
+        deferred.insert(label(&db, "wph"), var(&format!("{}W1", METAVARIABLE_LABEL_PREFIX), wff));
         deferred.insert(label(&db, "vx"), var("vx", setvar));
         let mut needed = BTreeSet::new();
         db.check_distinct(None, ax5, &deferred, &Substitutions::new(), &mut needed).unwrap();
@@ -447,5 +648,69 @@ mod tests {
         shared.insert(label(&db, "wph"), var("vx", wff));
         shared.insert(label(&db, "vx"), var("vx", setvar));
         assert!(db.check_distinct(None, ax5, &shared, &Substitutions::new(), &mut BTreeSet::new()).is_err());
+    }
+
+    fn fixture(name: &str) -> String {
+        format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), name)
+    }
+
+    fn letters(db: &Db) -> Vec<(char, String)> {
+        db.metavariable_letters().into_iter().collect()
+    }
+
+    /// The letters follow MMX's work variable tags: first letter of the typecode not yet taken.
+    #[test]
+    fn letters_are_derived_from_the_typecodes() {
+        let mut db = Db::default();
+        db.parse(&fixture("meta.mm")).unwrap();
+        assert_eq!(letters(&db), vec![('C', "class".to_string()), ('W', "wff".to_string())]);
+        // dv.mm: `wff` then `setvar`.
+        assert_eq!(letters(&dv_db()), vec![('S', "setvar".to_string()), ('W', "wff".to_string())]);
+        let mut peano = Db::default();
+        peano.parse(&fixture("peano.mm")).unwrap();
+        assert_eq!(
+            letters(&peano),
+            vec![('T', "term".to_string()), ('V', "var".to_string()), ('W', "wff".to_string())]
+        );
+    }
+
+    #[test]
+    fn scripts_set_how_many_metavariables_are_declared() {
+        let used = scan_metavariables("$ ( &W9 -> &C12 = &C12x ) $ &x1 &W &W2 // &S7");
+        assert_eq!(used, BTreeMap::from([('S', 7), ('W', 9), ('C', 12)]));
+        let mut db = Db::default();
+        db.require_metavariables(&used).unwrap();
+        db.parse(&fixture("meta.mm")).unwrap();
+        // The scripts' use, plus the reserve; no ceiling at 5, 7 or 6.
+        assert!(db.get_symbol("&W9".to_string()).is_some());
+        assert!(db.get_symbol(format!("&C{}", 12 + METAVARIABLE_RESERVE)).is_some());
+        assert!(db.get_symbol(format!("&C{}", 13 + METAVARIABLE_RESERVE)).is_none());
+        // Letters without a typecode (`S`) are ignored.
+        assert!(db.get_symbol("&S1".to_string()).is_none());
+    }
+
+    /// More metavariables can be declared later in the same process; what was built stays valid.
+    #[test]
+    fn metavariables_can_grow_in_the_same_process() {
+        let mut db = Db::default();
+        db.parse(&fixture("meta.mm")).unwrap();
+        let w1 = db.get_symbol("&W1".to_string()).unwrap();
+        let wff = db.get_symbol("wff".to_string()).unwrap();
+        let before = Formula::from_float(label(&db, &format!("{}W1", METAVARIABLE_LABEL_PREFIX)), wff);
+        assert!(db.get_symbol("&W40".to_string()).is_none());
+        db.ensure_metavariables(&BTreeMap::from([('W', 40)])).unwrap();
+        assert!(db.get_symbol("&W40".to_string()).is_some());
+        assert!(db.get_symbol(format!("&W{}", 40 + METAVARIABLE_RESERVE)).is_some());
+        assert_eq!(db.get_symbol("&W1".to_string()), Some(w1));
+        assert_eq!(format!("{}", DisplayPair(&before, &db)), "wff &W1");
+        // Parsing a formula with the new metavariable works.
+        assert!(db.get_theorem_label(format!("{}W40", METAVARIABLE_LABEL_PREFIX)).is_some());
+    }
+
+    #[test]
+    fn a_database_using_the_reserved_label_prefix_is_refused() {
+        let mut db = Db::default();
+        let error = db.parse(&fixture("reserved.mm")).unwrap_err();
+        assert!(format!("{}", error).contains("rumm.mv.W1"), "{}", error);
     }
 }

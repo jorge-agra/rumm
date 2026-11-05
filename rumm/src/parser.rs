@@ -156,11 +156,14 @@ impl<'a> Parser<'a> {
     // }
 
     pub fn from_str(filename: String, str: &'a str) -> Self {
+        let mut db = Db::default();
+        // The metavariables the script uses are declared when it loads its database.
+        let _ = db.require_metavariables(&scan_metavariables(str));
         Parser {
             filename,
             lexer: Token::lexer(str),
             last_description: None,
-            db: Db::default(),
+            db,
             debug: true,
         }
     }

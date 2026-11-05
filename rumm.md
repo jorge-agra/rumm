@@ -25,7 +25,13 @@ load <filename>
 
 ## Metavariables
 
-For practical purposes, it's conveninent to make a distinction between formulas that contain metavariables and the ones that don't. Metavariables in Rumm conventionally start with `&` followed by an uppercase letter and a number. The [examples.mm](https://github.com/tirix/rumm/blob/master/rumm/examples/examples.mm) file defines `&W1`, `&W2` ... for well-formed formulas, `&C1`, `&C2`.. for classes and `&S1`, `&S2`.. for set variables. Technically, any variable can be used as metavariable, but for historical conventions (yamma, mmj2) and to avoid unexpected behaviour it's good practice to keep this notation.
+For practical purposes, it's convenient to make a distinction between formulas that contain metavariables and the ones that don't. A metavariable in Rumm is written `&` followed by an uppercase letter and a number: `&W1`, `&C12`, `&S3`.
+
+**No `.mm` file declares them.** The database loaded by a script is a plain one. Rumm loads it through a synthetic, in-memory root file which includes the database and then declares the metavariables as `$v` and `$f` (nothing is written to disk). Their `$f` labels start with `rumm.mv.`; a database already using that prefix is refused.
+
+- **The letter gives the typecode**, derived from the database the way MMX derives its work variables: the typecodes having a `$f`, in order of their first `$f`, each take the first letter of their name (uppercased, A-Z only) not already taken, else the first free letter. On set.mm this gives `&W` for `wff`, `&S` for `setvar` and `&C` for `class` (on a Peano-style database with `wff`, `term` and `var`, `&W`, `&T` and `&V`). The typecode is enforced: binding a class metavariable to a wff, for instance as the value of a `with` substitution, fails with a `WrongTypecode` tactic error. A letter that maps to no typecode is an unknown symbol.
+- **There is no limit** set by a declaration. Rumm scans the script for the highest index used for each letter, and declares that many, plus a reserve of 8 for fresh ones. The synthetic segment can be regenerated larger later in the same process (`Db::ensure_metavariables`), reparsing incrementally; the formulas built before stay valid.
+- **A metavariable never reaches a finished proof.** A proof which still contains one, in a step or in the substitution of a citation, is not complete: it is reported as `Failure: UnresolvedMetavariables("&C2")` naming them, and nothing is exported. A metavariable bound by a `match` or `find` is substituted before that, so the proof is fine. (This also covers the `$d` pairs holding a metavariable, which can only be checked once it is bound.)
 
 ## Tactics
 

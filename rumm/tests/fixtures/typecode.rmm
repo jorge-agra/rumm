@@ -1,0 +1,8 @@
+load "meta.mm"
+
+// `&C1` is a class metavariable (the letter's typecode comes from the database).
+// Binding it to the wff variable `ps` of `ax-mp` is a tactic error.
+proof ~idth { apply ~ax-mp ! ! with ~wps $ &C1 $ }
+
+// The same with a class for a class variable is not an error.
+proof ~c0id { match goal $ &C1 = &C1 $ { apply ~eqid with ~cA $ &C1 $ } }

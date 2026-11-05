@@ -44,6 +44,9 @@ pub enum TacticsError {
     DistinctVariable(String),
     /// The cited statement is the theorem being proved, or comes after it in the database.
     CitedAfterGoal(String),
+    /// The finished proof still contains metavariables (their names, separated by spaces):
+    /// they are neither bound nor part of the theorem, so the proof is not complete.
+    UnresolvedMetavariables(String),
     WrongParameterCount(usize, usize),
     WrongHypCount(usize, usize),
     WrongTypecode(TypeCode, TypeCode, Label),

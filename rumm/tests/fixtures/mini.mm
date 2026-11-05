@@ -3,12 +3,10 @@ $( A tiny propositional database for the Rumm tests. $)
 $c ( ) -> <-> wff |- T. $.
 $( $j syntax 'wff'; syntax '|-' as 'wff'; $)
 
-$v ph ps ch &W1 &W2 $.
+$v ph ps ch $.
 wph $f wff ph $.
 wps $f wff ps $.
 wch $f wff ch $.
-ww1 $f wff &W1 $.
-ww2 $f wff &W2 $.
 
 wi $a wff ( ph -> ps ) $.
 wb $a wff ( ph <-> ps ) $.

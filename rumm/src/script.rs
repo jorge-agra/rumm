@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::lang::{Db, Display};
 use crate::lang::{ProofDefinition, TacticsDefinition, TacticsDict};
 use crate::parser::{Parse, Parser};
+use crate::tactics::TacticsError;
 use crate::context::DEFAULT_MAX_DEPTH;
 use core::fmt::{Debug, Formatter};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -61,6 +62,13 @@ impl Script {
                 proof_def
                     .prove(self.db.clone(), self.tactics_definitions.clone(), self.max_depth)
                     .and_then(|step| {
+                        // A proof with a metavariable left is not complete.
+                        let unresolved = step.unresolved_metavariables(&self.db);
+                        if !unresolved.is_empty() {
+                            return Err(TacticsError::UnresolvedMetavariables(
+                                unresolved.into_iter().collect::<Vec<_>>().join(" "),
+                            ));
+                        }
                         // The citations are checked again on the finished proof, whose
                         // substitutions are settled; this also gives the `$d` it needs.
                         let distinct = step.distinct_variables(&self.db, Some(proof_def.theorem()))?;

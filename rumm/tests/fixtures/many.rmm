@@ -1,0 +1,7 @@
+load "meta.mm"
+
+// More metavariables than the old wrapper declared (`&W5`, `&C7`, `&S6`): the scripts' own use
+// sets how many exist. `&W9` and `&C12` bind here.
+proof ~idth { match goal $ ( &W9 -> &W9 ) $ { apply ~id with ~wph $ &W9 $ } }
+
+proof ~c1id { match goal $ &C12 = &C12 $ { apply ~eqid with ~cA $ &C12 $ } }

@@ -3,10 +3,9 @@ $( A tiny predicate database for the Rumm `$d` and database order tests. $)
 $c ( ) -> = A. wff setvar |- $.
 $( $j syntax 'wff'; syntax 'setvar'; syntax '|-' as 'wff'; $)
 
-$v ph ps x y z &W1 $.
+$v ph ps x y z $.
 wph $f wff ph $.
 wps $f wff ps $.
-ww1 $f wff &W1 $.
 vx $f setvar x $.
 vy $f setvar y $.
 vz $f setvar z $.
