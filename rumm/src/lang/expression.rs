@@ -125,6 +125,7 @@ impl TacticsExpression {
 	}
 
 	pub fn execute(&self, context: &mut Context) -> TacticsResult {
+		context.check_depth()?;
 		self.evaluate(&context)?.execute(context)
 	}
 }

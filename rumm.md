@@ -143,6 +143,8 @@ This tactics finds in the loaded database a theorem matching the given formula t
 If a match with the given formula is found, the first tactics provided is used to find a proof for the theorem's hypotheses. Note that only one tactics is provided for all hypotheses.
 Then the second tactics is applied to prove the given formula itself.
 
+The formula is matched against each theorem's statement in either direction: the statement's variables may be bound to parts of the formula (the formula is an instance of the statement), or the formula's metavariables may be bound to parts of the statement. The first is tried first. The `finddf` tactics is the same, restricted to definitions (axioms labelled `df-...`).
+
 ---
 
 ### **The `findhyp` built-in tactics**
@@ -219,6 +221,14 @@ proof ~com23 {
 The metavariable  `&W3` holds the formula `( ps -> th )`, derived from the `match` tactics. The explicit substitution list given as parameter to the `use` tactics is then used to replace `ps` with `ch` in `&W3`, therefore deriving `( ch -> th )`, which is the sub-formula we need to prove [~com23](https://us.metamath.org/mpeuni/com23.html).
 
 ---
+
+## Depth limit
+
+Tactics may call each other recursively, and a script can make them cycle (`equality` calling `deduction` calling `equality`...). To end such a run with an error rather than a stack overflow, the nesting depth of tactics is limited. **The default limit is 100** (the stock `set.rmm` proofs nest about 20 deep), and the command line switch `--max-depth <N>` changes it. A tactics nested deeper than the limit fails, as any tactics would, with `DepthLimitExceeded`: `try` can move on to its next alternative, and otherwise the proof fails and the next proof of the script runs.
+
+## Failures
+
+A proof which cannot be built, or whose export panics (for instance because a work variable was left unbound), is reported as `Failure` for that proof; the following proofs still run. Errors in loading the database or the script are reported with their diagnostic and file, and rumm exits with status 1.
 
 ## Theorems
 

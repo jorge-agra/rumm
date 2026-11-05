@@ -2,12 +2,16 @@ use crate::error::Result;
 use crate::lang::{Db, Display};
 use crate::lang::{ProofDefinition, TacticsDefinition, TacticsDict};
 use crate::parser::{Parse, Parser};
+use crate::context::DEFAULT_MAX_DEPTH;
 use core::fmt::{Debug, Formatter};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 pub struct Script {
     pub(crate) db: Db,
     pub(crate) tactics_definitions: TacticsDict,
     pub(crate) proof_definitions: Vec<ProofDefinition>,
+    /// Limit on the nesting depth of tactics, see `Context::check_depth`.
+    pub max_depth: usize,
 }
 
 impl Debug for Script {
@@ -41,6 +45,7 @@ impl Script {
             db,
             tactics_definitions: TacticsDict::from(tactics_list),
             proof_definitions,
+            max_depth: DEFAULT_MAX_DEPTH,
         }
     }
 
@@ -50,16 +55,34 @@ impl Script {
 
     pub fn execute(&mut self) -> Result {
         for proof_def in &self.proof_definitions {
-            match proof_def.prove(self.db.clone(), self.tactics_definitions.clone()) {
-                Ok(step) => {
+            // A panic while proving or exporting one proof (e.g. an unbound work variable)
+            // is reported as that proof's failure, and the next proofs still run.
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                proof_def
+                    .prove(self.db.clone(), self.tactics_definitions.clone(), self.max_depth)
+                    .map(|step| {
+                        let mut arr = step.as_proof_tree_array(self.db.clone());
+                        arr.calc_indent();
+                        let mut mmp = Vec::new();
+                        self.db.export_mmp(proof_def.theorem(), &arr, &mut mmp);
+                        String::from_utf8_lossy(&mmp).into_owned()
+                    })
+            }));
+            match outcome {
+                Ok(Ok(mmp)) => {
                     println!("Success");
-                    let mut arr = step.as_proof_tree_array(self.db.clone());
-                    arr.calc_indent();
-                    self.db
-                        .export_mmp(proof_def.theorem(), &arr, &mut std::io::stdout());
+                    print!("{}", mmp);
                 }
-                Err(_) => {
-                    println!("Failure");
+                Ok(Err(error)) => {
+                    println!("Failure: {:?}", error);
+                }
+                Err(panic) => {
+                    let reason = panic
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| panic.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown panic");
+                    println!("Failure: panic: {}", reason);
                 }
             }
         }

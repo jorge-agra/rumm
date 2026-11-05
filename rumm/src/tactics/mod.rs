@@ -37,6 +37,8 @@ pub enum TacticsError {
     Skipped,
     UnknownTactics(String),
     UnificationFailed,
+    /// The nesting of tactics exceeded the depth limit (see `Context::max_depth`).
+    DepthLimitExceeded(usize),
     NoMatchFound,
     WrongParameterCount(usize, usize),
     WrongHypCount(usize, usize),

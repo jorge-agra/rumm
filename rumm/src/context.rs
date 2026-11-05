@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use crate::tactics::Tactics;
+use crate::tactics::TacticsError;
+use crate::tactics::TacticsResult;
 use crate::lang::ProofStep;
 use crate::lang::Db;
 use crate::lang::DisplayPair;
@@ -11,6 +13,9 @@ use metamath_rs::formula::Substitutions;
 use metamath_rs::Formula;
 use metamath_rs::Label;
 use std::collections::HashMap;
+
+/// The default limit on the nesting depth of tactics, see `Context::max_depth`.
+pub const DEFAULT_MAX_DEPTH: usize = 100;
 
 #[derive(Clone)]
 pub struct Context {
@@ -25,6 +30,7 @@ pub struct Context {
     formula_variables: HashMap<String, Formula>,
     subst_variables: HashMap<String, Substitutions>,
     depth: usize,
+    max_depth: usize,
 }
 
 impl Debug for Context {
@@ -39,6 +45,7 @@ impl<'a> Context {
         goal: Formula,
         hypotheses: Hypotheses,
         tactics_definitions: TacticsDict,
+        max_depth: usize,
     ) -> Self {
         let subgoals = vec![];
         Context {
@@ -53,6 +60,18 @@ impl<'a> Context {
             formula_variables: HashMap::default(),
             subst_variables: HashMap::default(),
             depth: 0,
+            max_depth,
+        }
+    }
+
+    /// Fails with `DepthLimitExceeded` once tactics are nested deeper than the limit.
+    /// A tactics which keeps calling itself (directly or through others) ends up here,
+    /// as a failure which `try` can recover from, rather than overflowing the stack.
+    pub fn check_depth(&self) -> TacticsResult<()> {
+        if self.depth > self.max_depth {
+            Err(TacticsError::DepthLimitExceeded(self.max_depth))
+        } else {
+            Ok(())
         }
     }
 
@@ -86,6 +105,7 @@ impl<'a> Context {
             formula_variables: self.formula_variables.clone(),
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
+            max_depth: self.max_depth,
         }
     }
 
@@ -104,6 +124,7 @@ impl<'a> Context {
             formula_variables: self.formula_variables.clone(),
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
+            max_depth: self.max_depth,
         }
     }
 
@@ -120,6 +141,7 @@ impl<'a> Context {
             formula_variables: self.formula_variables.clone(),
             subst_variables: self.subst_variables.clone(),
             depth: self.depth + 1,
+            max_depth: self.max_depth,
         }
     }
 

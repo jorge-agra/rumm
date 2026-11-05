@@ -117,12 +117,12 @@ impl Parse for ProofDefinition {
 }
 
 impl ProofDefinition {
-    pub fn prove(&self, db: Db, tactics_definitions: TacticsDict) -> std::result::Result<ProofStep, TacticsError> {
+    pub fn prove(&self, db: Db, tactics_definitions: TacticsDict, max_depth: usize) -> std::result::Result<ProofStep, TacticsError> {
         if let Some((theorem_formula, essential_hypotheses)) = db.get_theorem_formulas(self.theorem) {
             println!("====================================================\n\n");
             println!("Proof for {:?}:", self.theorem.to_string(&db));
             let mut context =
-                Context::new(db.clone(), theorem_formula, essential_hypotheses, tactics_definitions);
+                Context::new(db.clone(), theorem_formula, essential_hypotheses, tactics_definitions, max_depth);
             self.tactics.execute(&mut context)
         } else {
             println!("Unknown theorem {:?}!", self.theorem);

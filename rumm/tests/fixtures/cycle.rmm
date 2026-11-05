@@ -1,0 +1,13 @@
+load "mini.mm"
+
+// Mutually recursive tactics, as `equality` and `deduction` are in set.rmm.
+tactics equality ()
+{ try { use deduction } { apply ~ax-mp ! } }
+
+tactics deduction ()
+{ try { use equality } { apply ~ax-mp ! } }
+
+proof ~cyc { use equality }
+
+// A proof after the cycling one still runs.
+proof ~dftru { apply ~df-tru }

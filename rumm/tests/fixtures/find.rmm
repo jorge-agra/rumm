@@ -1,0 +1,10 @@
+load "mini.mm"
+
+// The goal is an instance of the definition: the definition's variables are bound.
+proof ~dfinst { finddf ! goal ! }
+
+// The pattern contains a metavariable, bound to a part of the definition.
+proof ~dftru { finddf ! $ ( T. <-> &W1 ) $ ! }
+
+// Same, without restricting the search to definitions.
+proof ~dftru { find ! $ ( T. <-> &W1 ) $ ! }
